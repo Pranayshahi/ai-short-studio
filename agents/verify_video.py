@@ -354,9 +354,18 @@ class VerifyVideoAgent:
         })
 
         # Check Topic Match scores
+        # Images the user uploaded themselves are user-verified: they don't get a machine match score
+        user_sources = ("manual_upload", "user_upload")
+        user_records = [v for v in visual_records if v.get("source") in user_sources]
+        scored = [v for v in visual_records if v.get("source") not in user_sources]
         # Unverified AI images carry topic_match_score=None; they must not count as a pass
-        numeric = [int(v["topic_match_score"]) for v in visual_records if isinstance(v.get("topic_match_score"), (int, float))]
-        match_scores = numeric or [0 if visual_records else 90]
+        numeric = [int(v["topic_match_score"]) for v in scored if isinstance(v.get("topic_match_score"), (int, float))]
+        if numeric:
+            match_scores = numeric
+        elif user_records and not scored:
+            match_scores = [100]  # every scene is a user-provided image
+        else:
+            match_scores = [0 if visual_records else 90]
         avg_match = int(round(sum(match_scores) / len(match_scores)))
         min_match = min(match_scores)
         topic_match_ok = min_match >= 55
@@ -382,7 +391,8 @@ class VerifyVideoAgent:
             "stage": "image-generator",
             "passed": topic_match_ok,
             "detail": (
-                f"Avg Topic Match Score: {avg_match}% (Min: {min_match}%). "
+                (f"{len(user_records)} user-uploaded image(s) counted as user-verified. " if user_records else "")
+                + f"Avg Topic Match Score: {avg_match}% (Min: {min_match}%). "
                 f"Auto-replacements (CHANGE_IMAGE) executed: {len(change_events)}."
             ),
             "remediation": None if topic_match_ok else "Trigger image-generator CHANGE_IMAGE for low-matching scenes.",

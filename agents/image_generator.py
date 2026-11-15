@@ -2379,9 +2379,14 @@ class ImageGeneratorAgent:
           Right: Two bold black bullet point specs (e.g., • Cartridge - 7.62×39 mm. / • No. built - 75 million)
         """
         poster_spec = image_data.get("weaponx_poster_spec") or {}
-        user_prompt = image_data.get("master_image_prompt") or ""
-        if self._use_verified_evolution_poster(user_prompt, clean_topic, poster_spec):
-            return self._acquire_evolution_poster(user_prompt, clean_topic, dest_path)
+        # The user's request can arrive as the topic itself, as image_data.topic, or as the image prompt
+        request_texts = [image_data.get("topic") or "", clean_topic or "", image_data.get("master_image_prompt") or "",
+                         image_data.get("topic_subject") or ""]
+        if self._use_verified_evolution_poster(request_texts, clean_topic, poster_spec):
+            from agents import evolution_poster
+            evo_text = next((t for t in request_texts if evolution_poster.is_evolution_prompt(t)), "")
+            subject = evolution_poster.parse_prompt(evo_text)["topic"] if evo_text else (image_data.get("topic_subject") or clean_topic)
+            return self._acquire_evolution_poster(evo_text, subject, dest_path)
         gemini_prompt = (
             poster_spec.get("gemini_prompt")
             or image_data.get("master_image_prompt")
@@ -2426,15 +2431,27 @@ class ImageGeneratorAgent:
         }
 
     @staticmethod
-    def _use_verified_evolution_poster(user_prompt: str, clean_topic: str, poster_spec: Dict[str, Any]) -> bool:
-        """Evolution/comparison prompts, and any non-firearm topic whose rows fell back to the built-in
-        rifle list (Gemini unavailable), use the Wikipedia-verified evolution poster."""
+    def _use_verified_evolution_poster(request_texts: Any, clean_topic: str, poster_spec: Dict[str, Any]) -> bool:
+        """
+        Use the Wikipedia-verified evolution poster when:
+          - any form of the request is an evolution/comparison prompt, or
+          - the subject is not a firearm: the legacy chart only has gun drawings and preset gun lists
+            (it drew AK-47s / Chinese rifles for "Infantry Combat Vehicles").
+        Firearm topics keep the legacy rifle chart.
+        """
         from agents import evolution_poster
-        if evolution_poster.is_evolution_prompt(user_prompt):
+        texts = [request_texts] if isinstance(request_texts, str) else list(request_texts or [])
+        if any(evolution_poster.is_evolution_prompt(t) for t in texts if t):
             return True
-        names = " ".join(str(r.get("name", "")) for r in (poster_spec.get("comparison_items") or []))
-        is_firearm_topic = bool(re.search(r"rifle|gun|pistol|firearm|carbine|ak-?47|kalashnikov|small arms", clean_topic, re.I))
-        return bool(names) and not is_firearm_topic and bool(re.search(r"AK-47|M16|HK416|FN SCAR", names))
+        subject = clean_topic or ""
+        for t in texts:
+            m = re.search(r"\*\*TOPIC:\*\*\s*(.+)", t or "")
+            if m:
+                subject = m.group(1)
+                break
+        is_firearm_topic = bool(re.search(r"rifle|gun|pistol|firearm|carbine|ak-?47|kalashnikov|small arms|sniper|weapons? in",
+                                          subject, re.I))
+        return not is_firearm_topic
 
     def _acquire_evolution_poster(self, user_prompt: str, clean_topic: str, dest_path: Path) -> Dict[str, Any]:
         from agents import evolution_poster

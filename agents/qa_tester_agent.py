@@ -1164,9 +1164,14 @@ class QATesterAgent:
             assert pr["topic"] == "Infantry Combat Vehicles" and pr["left_label"].startswith("HISTORICAL") and (pr["min_rows"], pr["max_rows"]) == (6, 8), pr
             # Routing: an unrelated topic must never get the built-in AK-47 rifle list
             ak_rows = {"comparison_items": [{"name": "AK-47"}, {"name": "M16A4"}, {"name": "HK416"}]}
+            china_rows = {"comparison_items": [{"name": "QBZ-191"}, {"name": "QBZ-192"}]}
             assert IG._use_verified_evolution_poster("", "Infantry Combat Vehicles", ak_rows)
+            assert IG._use_verified_evolution_poster(["", "Infantry Combat Vehicles", ""], "Infantry Combat Vehicles", china_rows), \
+                "non-firearm topics must never get a preset gun list (drew Chinese rifles for IFVs)"
+            assert IG._use_verified_evolution_poster([prompt, "", "legacy weaponx prompt"], prompt, china_rows), "evolution prompt given as the topic"
             assert IG._use_verified_evolution_poster(prompt, "Main Battle Tanks", {})
             assert not IG._use_verified_evolution_poster("", "AK-47 rifles used by armies", ak_rows)
+            assert not IG._use_verified_evolution_poster(["", "Chinese Army Service Weapons in 2026", ""], "Chinese Army Service Weapons in 2026", china_rows)
             # Pairing rules on synthetic models
             def m(t, y, o, typ="Infantry fighting vehicle", L=10000):
                 return {"title": t, "requested_as": t, "year": y, "origin": o, "type": typ, "image_url": "x", "is_prototype": y is None,
