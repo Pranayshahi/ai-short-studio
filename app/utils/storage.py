@@ -11,6 +11,7 @@ import config
 
 HISTORY_FILE = config.OUTPUT_DIR / "history.json"
 PROJECTS_INDEX_FILE = config.OUTPUT_DIR / "projects_index.json"
+TRASH_DIR = config.OUTPUT_DIR / ".trash"
 
 # Serializes read-modify-write cycles across the web server's worker threads...
 _THREAD_LOCK = threading.RLock()
@@ -109,7 +110,8 @@ class StorageManager:
 
     @classmethod
     def delete_project(cls, project_id: str) -> bool:
-        """Removes project metadata and deletes project folder from disk."""
+        """Moves a project to the recycle bin (output/.trash) instead of erasing it.
+        Restore with restore_project(); bin items older than TRASH_KEEP_DAYS are purged."""
         import shutil
         with _locked():
             projects = cls._read_json(PROJECTS_INDEX_FILE, [], strict=True)
@@ -117,13 +119,69 @@ class StorageManager:
             if not target:
                 return False
 
-            # 1. Remove from list and save
-            updated = [p for p in projects if p.get("id") != project_id]
-            cls._write_json(PROJECTS_INDEX_FILE, updated)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            bin_dir = TRASH_DIR / f"{project_id}__{stamp}"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            p_dir = target.get("project_dir")
+            if p_dir and Path(p_dir).exists():
+                shutil.move(str(p_dir), str(bin_dir / "files"))
+            target["deleted_at"] = datetime.now().isoformat()
+            with open(bin_dir / "project_record.json", "w", encoding="utf-8") as f:
+                json.dump(target, f, indent=2, ensure_ascii=False)
 
-        # 2. Delete project directory from disk
-        p_dir = target.get("project_dir")
-        if p_dir and Path(p_dir).exists():
-            shutil.rmtree(p_dir, ignore_errors=True)
-
+            # Only drop it from the index once the files are safely in the bin
+            cls._write_json(PROJECTS_INDEX_FILE, [p for p in projects if p.get("id") != project_id])
         return True
+
+    @classmethod
+    def list_trash(cls) -> List[Dict[str, Any]]:
+        items = []
+        if TRASH_DIR.exists():
+            for d in sorted(TRASH_DIR.iterdir(), reverse=True):
+                rec_file = d / "project_record.json"
+                if d.is_dir() and rec_file.exists():
+                    try:
+                        rec = json.loads(rec_file.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    items.append({"trash_id": d.name, "id": rec.get("id"), "title": rec.get("title"),
+                                  "topic": rec.get("topic"), "deleted_at": rec.get("deleted_at"),
+                                  "has_files": (d / "files").exists()})
+        return items
+
+    @classmethod
+    def restore_project(cls, trash_id: str) -> Optional[Dict[str, Any]]:
+        import shutil
+        bin_dir = TRASH_DIR / trash_id
+        if "/" in trash_id or ".." in trash_id or not (bin_dir / "project_record.json").exists():
+            return None
+        with _locked():
+            rec = json.loads((bin_dir / "project_record.json").read_text(encoding="utf-8"))
+            projects = cls._read_json(PROJECTS_INDEX_FILE, [], strict=True)
+            if any(p.get("id") == rec.get("id") for p in projects):
+                raise ValueError(f"A project with id {rec.get('id')} already exists")
+            dest = Path(rec.get("project_dir") or (config.PROJECTS_DIR / rec["id"]))
+            if (bin_dir / "files").exists():
+                if dest.exists():
+                    raise ValueError(f"Folder {dest} already exists")
+                shutil.move(str(bin_dir / "files"), str(dest))
+            rec.pop("deleted_at", None)
+            projects.insert(0, rec)
+            cls._write_json(PROJECTS_INDEX_FILE, projects)
+        shutil.rmtree(bin_dir, ignore_errors=True)
+        return rec
+
+    @classmethod
+    def purge_trash(cls, keep_days: Optional[int] = None) -> int:
+        """Permanently removes bin items older than keep_days (default TRASH_KEEP_DAYS=30)."""
+        import shutil
+        import os
+        days = keep_days if keep_days is not None else int(os.getenv("TRASH_KEEP_DAYS", "30"))
+        cutoff = datetime.now().timestamp() - days * 86400
+        removed = 0
+        if TRASH_DIR.exists():
+            for d in TRASH_DIR.iterdir():
+                if d.is_dir() and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+                    removed += 1
+        return removed

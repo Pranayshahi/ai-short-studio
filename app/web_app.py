@@ -1214,7 +1214,25 @@ def delete_project_endpoint(project_id: str):
     success = StorageManager.delete_project(project_id)
     if not success:
         raise HTTPException(status_code=404, detail="Project not found")
-    return {"status": "deleted", "id": project_id}
+    return {"status": "deleted", "id": project_id, "recoverable": True,
+            "message": "Moved to the recycle bin (GET /api/trash, restore with POST /api/trash/{trash_id}/restore)."}
+
+
+@app.get("/api/trash")
+def list_trash():
+    """Deleted projects that can still be restored (kept TRASH_KEEP_DAYS days, default 30)."""
+    return JSONResponse(content=StorageManager.list_trash(), headers=NO_CACHE_HEADERS)
+
+
+@app.post("/api/trash/{trash_id}/restore")
+def restore_from_trash(trash_id: str):
+    try:
+        rec = StorageManager.restore_project(trash_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    if not rec:
+        raise HTTPException(status_code=404, detail="Not found in the recycle bin")
+    return {"status": "restored", "id": rec.get("id"), "project": rec}
 
 @app.post("/api/publish/{project_id}")
 def publish_to_youtube(project_id: str, req: PublishRequest):
