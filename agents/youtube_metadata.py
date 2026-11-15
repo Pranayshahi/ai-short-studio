@@ -51,6 +51,9 @@ def subject_from_request(topic: str) -> str:
         return fields["topic"][:80]
     if fields.get("title"):
         return fields["title"][:80]
+    heading = _first_line_topic(topic)
+    if heading:
+        return heading[:80]
     first = re.sub(r"\*\*", "", str(topic or "")).strip().splitlines()[0] if topic else ""
     first = re.split(r"[.:;!?\n]|\s[–—-]\s", first)[0].strip()
     return first[:80] or "Military Technology"
@@ -71,10 +74,32 @@ def _prompt_sentences(source_prompt: Optional[str]) -> List[str]:
 _SECTION_HEADER = re.compile(r"^\s*[A-Z][A-Z0-9 &/()'-]{2,40}:\s*$")   # "VISUAL STYLE:", "FINAL RESULT:"
 
 
+def _first_line_topic(source_prompt: Optional[str]) -> Optional[str]:
+    """A request whose first line is a plain heading ("Top 10 IFVs Used by Modern Armies – 2026") states
+    its topic there. An instruction first line ("Create a ... infographic in 9:16") is NOT a topic."""
+    lines = [l.strip() for l in (source_prompt or "").splitlines() if l.strip()]
+    if len(lines) < 2:
+        return None
+    first = re.sub(r"\*\*", "", lines[0]).strip(" #:-–—")
+    if (not first or len(first.split()) > 16 or _INSTRUCTION_START.match(first) or _PROMPT_MARKERS.search(first)
+            or _MD_FIELD.search(lines[0]) or _PLAIN_FIELD.search(lines[0])):
+        return None
+    return first
+
+
 def _allowed(source_prompt: Optional[str]) -> List[str]:
-    """The request's own TOPIC/TITLE values are legitimate metadata (that's the subject)."""
-    f = extract_request_fields(source_prompt or "")
-    return [_norm(v) for v in f.values() if v]
+    """The request's own subject is legitimate metadata: its TOPIC/TITLE values, or a plain heading
+    on its first line (plus that heading without its " – 2026"-style subtitle)."""
+    vals = [v for v in extract_request_fields(source_prompt or "").values() if v]
+    first = _first_line_topic(source_prompt)
+    if first:
+        vals.append(first)
+        try:
+            from agents.subject_match import subject_core
+            vals.append(subject_core(first))
+        except Exception:
+            pass
+    return [_norm(v) for v in vals if v]
 
 
 def is_prompt_like(line: str, source_prompt: Optional[str] = None) -> bool:
