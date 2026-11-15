@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 MODEL_ID = "openai/clip-vit-base-patch32"
+TOY_MAX_SHARE = 0.15  # real photos measured 0.00-0.03 (all labels); LEGO frames 0.26-0.32
 
 # Target descriptions per subject category (several phrasings improve zero-shot robustness)
 CATEGORY_PROMPTS: Dict[str, List[str]] = {
@@ -33,6 +34,15 @@ PEOPLE_PROMPTS: List[str] = [
     "a soldier holding a rifle",
     "an anime illustration of a soldier",
     "a person posing with a weapon",
+]
+
+# Hobby content (common on Flickr/Openverse): models, toys and game captures are not the real thing
+TOY_PROMPTS: List[str] = [
+    "a LEGO model",
+    "a plastic scale model kit",
+    "a toy",
+    "a video game screenshot",
+    "a diorama with miniature figures",
 ]
 
 # Typical failure modes of weak text-to-image models and irrelevant stock photos
@@ -104,7 +114,7 @@ def verify(image_path: str | Path, category: str, min_target_share: float = 0.45
         # otherwise the closest firearm label wins by default (the C25/AK-47 class of mistake).
         other_cats = {c: p for c, p in CATEGORY_PROMPTS.items() if c != category}
         cross = [lbl for prompts in other_cats.values() for lbl in prompts]
-        decoys = DECOY_PROMPTS + PEOPLE_PROMPTS + cross
+        decoys = DECOY_PROMPTS + PEOPLE_PROMPTS + TOY_PROMPTS + cross
         labels = targets + decoys
         inputs = _processor(text=labels, images=img, return_tensors="pt", padding=True).to(_device)
         with torch.no_grad():
@@ -119,12 +129,13 @@ def verify(image_path: str | Path, category: str, min_target_share: float = 0.45
         strongest_other = max([best_decoy] + list(cat_shares.values()))
         people_labels = PEOPLE_PROMPTS + ["a portrait of a person's face", "an anime illustration of a girl", "a photo of a person"]
         people_share = sum(probs[labels.index(l)] for l in people_labels if l in labels)
+        toy_share = sum(probs[labels.index(l)] for l in TOY_PROMPTS)
         if lenient:
-            passed = not (target_share < 0.25 and strongest_other > 0.5)
+            passed = not (target_share < 0.25 and strongest_other > 0.5) and toy_share < TOY_MAX_SHARE
         else:
             passed = (target_share >= min_target_share and target_share > best_decoy
                       and (best_other_cat is None or target_share > cat_shares[best_other_cat])
-                      and people_share < 0.45)
+                      and people_share < 0.45 and toy_share < TOY_MAX_SHARE)
         return {
             "available": True,
             "passed": bool(passed),
@@ -136,6 +147,7 @@ def verify(image_path: str | Path, category: str, min_target_share: float = 0.45
             "top_other_category": best_other_cat,
             "mode": "lenient" if lenient else "strict",
             "people_share": round(people_share, 3),
+            "toy_share": round(toy_share, 3),
         }
     except Exception as e:
         return {"available": False, "passed": None, "reason": f"CLIP inference error: {e}"}

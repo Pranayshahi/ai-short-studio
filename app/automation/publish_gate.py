@@ -31,9 +31,15 @@ def evaluate(project: Dict[str, Any]) -> Tuple[bool, List[str]]:
     records = project.get("visual_records") or []
     if not records:
         reasons.append("No scene image records")
+    # A scene whose image the user uploaded/replaced themselves is user-approved, whatever the
+    # (possibly stale) generation record says
+    user_scenes = {sc.get("scene_number") or i + 1 for i, sc in enumerate(project.get("scenes") or [])
+                   if sc.get("visual_source") in ("manual_upload", "user_upload")}
     for v in records:
         n = v.get("scene_number")
         src = v.get("source")
+        if n in user_scenes:
+            continue
         if src == "web_free":
             # Real (Wikimedia) photo matched to the subject by its metadata = verified real photo.
             # Block only if a content check actually RAN and rejected it (passed is False);

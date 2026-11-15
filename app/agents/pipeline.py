@@ -248,11 +248,35 @@ class ShortsPipeline:
                 f"(Topic Match Avg: {image_report.get('average_topic_match_score', 90)}%, Replacements: {replacements})"
             )
 
+            # Photo credits: CC BY / BY-SA require attribution; public-domain photos are credited as courtesy
+            credits, seen = [], set()
+            for v in visual_records:
+                # Composite posters (e.g. WeaponX evolution poster) carry the credits of every photo inside
+                for pc in v.get("photo_credits") or []:
+                    link = pc.get("url")
+                    if link and link not in seen:
+                        seen.add(link)
+                        who = re.sub(r"\s+", " ", str(pc.get("author") or "Unknown")).strip()[:60]
+                        model = f"{pc.get('model')}: " if pc.get("model") else ""
+                        credits.append(f"• {model}{who} · {pc.get('license') or 'see source'} · {link}")
+                if v.get("source") != "web_free" or str(v.get("source_url", "")).startswith("reframed://"):
+                    continue
+                link = v.get("page_url") or v.get("source_url")
+                if not link or link in seen:
+                    continue
+                seen.add(link)
+                author = re.sub(r"\s+", " ", str(v.get("author") or "Unknown")).strip()[:60]
+                credits.append(f"• {author} · {v.get('license') or 'see source'} · {link}")
+            if credits and "Photo credits:" not in script_data.get("description", ""):
+                script_data["description"] = (script_data.get("description", "").rstrip()
+                                              + "\n\nPhoto credits:\n" + "\n".join(credits[:12]))[:4900]
+
             # Attach source & topic-match metadata to scenes
             for idx, sc in enumerate(script_data.get("scenes", [])):
                 if idx < len(visual_records):
                     sc["visual_source"] = visual_records[idx]["source"]
                     sc["visual_source_url"] = visual_records[idx].get("source_url")
+                    sc["visual_source_title"] = visual_records[idx].get("source_title", "")
                     sc["visual_source_domain"] = visual_records[idx].get("source_domain")
                     sc["visual_license"] = visual_records[idx].get("license")
                     sc["topic_match_score"] = visual_records[idx].get("topic_match_score")

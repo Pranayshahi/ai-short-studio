@@ -1152,6 +1152,47 @@ class QATesterAgent:
         record("AI image prompts: rifles look like rifles, no people", t_ai_prompts, "Check firearms_long prompt and AI_SHOT_VARIANTS_BY_CATEGORY")
         record("Script: whole numbers and clean subject in hook", t_script, "Check _trim_to_clause and topic_agent hook")
         record("No duplicate concurrent generations", t_duplicate_generation_guard, "Check _running_generation_for in app/web_app.py")
+
+        def t_evolution_poster():
+            from agents import evolution_poster as ev, equipment_catalog as ec
+            from agents.image_generator import ImageGeneratorAgent as IG
+            prompt = ("**TOPIC:** Infantry Combat Vehicles\n**TITLE:** THE EVOLUTION OF Infantry Combat Vehicles (2026 EDITION)\n"
+                      "Divide the infographic into two main columns:\n- LEFT COLUMN: HISTORICAL ROOTS (ORIGINAL)\n"
+                      "- RIGHT COLUMN: ADVANCED MODERN COUNTERPARTS\n1. Display 6–8 historical equipment models in the left column.")
+            assert ev.is_evolution_prompt(prompt)
+            pr = ev.parse_prompt(prompt)
+            assert pr["topic"] == "Infantry Combat Vehicles" and pr["left_label"].startswith("HISTORICAL") and (pr["min_rows"], pr["max_rows"]) == (6, 8), pr
+            # Routing: an unrelated topic must never get the built-in AK-47 rifle list
+            ak_rows = {"comparison_items": [{"name": "AK-47"}, {"name": "M16A4"}, {"name": "HK416"}]}
+            assert IG._use_verified_evolution_poster("", "Infantry Combat Vehicles", ak_rows)
+            assert IG._use_verified_evolution_poster(prompt, "Main Battle Tanks", {})
+            assert not IG._use_verified_evolution_poster("", "AK-47 rifles used by armies", ak_rows)
+            # Pairing rules on synthetic models
+            def m(t, y, o, typ="Infantry fighting vehicle", L=10000):
+                return {"title": t, "requested_as": t, "year": y, "origin": o, "type": typ, "image_url": "x", "is_prototype": y is None,
+                        "calibre_mm": None, "weight_t": None, "article_length": L, "lead": ""}
+            models = {x["title"]: x for x in [
+                m("BMP-1", 1966, "Soviet Union", L=60000), m("BMP-3", 1987, "Soviet Union", L=40000), m("T-15 Armata", None, "Russia"),
+                m("Marder", 1971, "West Germany", L=30000), m("Puma", 2015, "Germany", L=30000),
+                m("AMX-10P", 1973, "France"), m("VBCI", 2008, "France"), m("BTR-60", 1961, "Soviet Union", typ="Armoured personnel carrier"),
+                m("M2 Bradley", 1981, "United States", L=80000), m("M1296 Dragoon", 2018, "United States", L=12000),
+                m("FV510 Warrior", 1987, "United Kingdom"), m("K21", 2009, "South Korea"), m("CV90", 1994, "Sweden"), m("Borsuk", 2025, "Poland")]}
+            pairs = ec.build_pairs(models, type_phrase="infantry fighting vehicles", sections={})
+            names = [p[s]["title"] for p in pairs for s in ("historical", "modern")]
+            assert len(names) == len(set(names)), f"repeated equipment: {names}"
+            assert "T-15 Armata" not in names and "BTR-60" not in names, "prototype / wrong type used"
+            assert all(p["modern"]["year"] > p["historical"]["year"] for p in pairs)
+            assert any(p["historical"]["title"] == "BMP-1" and p["modern"]["title"] == "BMP-3" for p in pairs), "same-country successor first"
+            assert len(pairs) >= 6, f"only {len(pairs)} rows"
+            # Photo choice: interiors / wrecks / the fossil cat named Puma are excluded
+            assert not ev._photo_name_ok("File:BMP-1, troop compartment.jpg", {"title": "BMP-1"})
+            assert not ev._photo_name_ok("File:Puma lacustris holotype.jpg", {"title": "Puma (German infantry fighting vehicle)"})
+            assert ev._photo_name_ok("File:Puma IFV with MJH.jpg", {"title": "Puma (German infantry fighting vehicle)"})
+            assert ev._split_label("Main gun 20 mm → 30 mm") == ("MAIN GUN", "20 → 30 mm")
+            return f"Evolution prompt parsed; {len(pairs)} verified rows, no repeats/prototypes; AK-47 list never used for non-rifle topics."
+
+        record("WeaponX evolution poster: verified pairs, never the AK-47 fallback", t_evolution_poster,
+               "Check agents/evolution_poster.py, agents/equipment_catalog.py and image_generator._use_verified_evolution_poster")
         return records
 
     def _check_storage_manager(self) -> List[Dict[str, Any]]:

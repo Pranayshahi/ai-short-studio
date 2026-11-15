@@ -21,3 +21,5 @@ torch>=2.4
 transformers>=4.44
 kokoro>=0.9
 soundfile>=0.12
+# Verified evolution posters (background removal)
+rembg[cpu]>=2.0

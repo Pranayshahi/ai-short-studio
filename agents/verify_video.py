@@ -545,7 +545,8 @@ class VerifyVideoAgent:
                 # Re-framed copies (older videos) are covered by the uniqueness check above
                 if sc.get("visual_source") != "web_free" or url.startswith("reframed://"):
                     continue
-                if not mentions_any(str(sc.get("visual_source_url") or ""), desigs):
+                # Title AND url: Flickr/Openverse urls are numeric, the model name is in the title
+                if not mentions_any(f"{sc.get('visual_source_title') or ''} {sc.get('visual_source_url') or ''}", desigs):
                     wrong.append(sc.get("scene_number"))
         subject_ok = not wrong
         checks.append({

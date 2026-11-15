@@ -620,6 +620,8 @@ class ImageGeneratorAgent:
                     "image_path": str(dest_path),
                     "source": "web_free",
                     "source_url": c_url,
+                    "page_url": cand.get("page_url") or c_url,
+                    "source_title": cand.get("title", ""),
                     "source_domain": src_ver.get("domain", "upload.wikimedia.org"),
                     "source_provider": src_ver.get("provider_name", "Wikimedia Commons"),
                     "license": src_ver.get("license", "Public Domain / CC"),
@@ -968,7 +970,8 @@ class ImageGeneratorAgent:
         # Every result carries the library's OWN title/description/keywords; _verify_topic_match
         # still requires the model designator + brand/category word in that metadata.
         for q in search_queries[:2]:
-            for cand in self._search_nasa_images(q, limit=limit) + self._search_dvids_images(q, limit=limit):
+            for cand in (self._search_nasa_images(q, limit=limit) + self._search_openverse_images(q, limit=limit)
+                         + self._search_dvids_images(q, limit=limit)):
                 if cand["url"] not in seen_urls:
                     seen_urls.add(cand["url"])
                     results.append(cand)
@@ -1004,6 +1007,60 @@ class ImageGeneratorAgent:
                 "license": "Public Domain (NASA)",
                 "author": meta.get("photographer") or meta.get("center") or "NASA",
                 "width": 1280, "height": 1024, "mime": "image/jpeg",
+            })
+        return out
+
+    # Licenses that allow commercial use AND adaptation (we crop/zoom/grade every photo)
+    OPENVERSE_LICENSES = "pdm,cc0,by,by-sa"
+    # Flickr hobby content that is NOT the real thing (LEGO builds, scale models, games, airsoft...)
+    HOBBY_WORDS = {"lego", "cobi", "brick", "bricks", "moc", "minifig", "scale model", "scalemodel", "model kit",
+                   "plastic model", "diorama", "toy", "toys", "miniature", "miniatures", "1/35", "1:35", "1/72", "1:72",
+                   "1/48", "1:48", "airsoft", "replica", "hobby", "modelling", "modeling", "kitbash", "figurine",
+                   "papercraft", "render", "3d", "blender", "warthunder", "war thunder", "world of tanks",
+                   "battlefield", "arma", "dcs", "cosplay", "rc", "radio control", "tamiya", "revell", "trumpeter"}
+
+    def _is_hobby_content(self, title: str, tags: List[str], description: str) -> bool:
+        text = f" {title} {description} ".lower()
+        tagset = {t.lower().strip() for t in tags}
+        return any(w in tagset or (" " in w and w in text) or re.search(rf"(?<![\w/]){re.escape(w)}(?![\w/])", text)
+                   for w in self.HOBBY_WORDS)
+
+    def _search_openverse_images(self, query: str, limit: int = 15) -> List[Dict[str, Any]]:
+        """Openverse (WordPress) public-domain / Creative Commons images, no key needed."""
+        params = {"q": query, "license": self.OPENVERSE_LICENSES, "page_size": min(limit, 20),
+                  "mature": "false", "extension": "jpg,png"}
+        data = {}
+        for attempt in range(2):
+            try:
+                resp = requests.get("https://api.openverse.org/v1/images/", params=params, headers=self.HEADERS, timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    break
+                if resp.status_code == 429:  # anonymous rate limit
+                    break
+            except Exception as e:
+                print(f"[{self.AGENT_NAME}] Openverse search note for '{query}': {e}")
+            time.sleep(2)
+        out = []
+        for r in data.get("results", [])[:limit]:
+            img = r.get("url")
+            if not img or (r.get("license") or "").lower() not in self.OPENVERSE_LICENSES.split(","):
+                continue
+            tags = [t.get("name", "") for t in (r.get("tags") or []) if isinstance(t, dict)]
+            if self._is_hobby_content(r.get("title") or "", tags, r.get("description") or ""):
+                continue  # LEGO / scale model / game capture, not the real equipment
+            lic = f"CC {r['license'].upper()} {r.get('license_version') or ''}".strip() if r.get("license") not in ("pdm", "cc0") \
+                else ("Public Domain" if r.get("license") == "pdm" else "CC0")
+            out.append({
+                "title": f"Openverse: {r.get('title') or ''}",
+                "url": img,
+                "page_url": r.get("foreign_landing_url") or img,
+                "description": (r.get("description") or "")[:300],
+                "categories": " | ".join(t.get("name", "") for t in (r.get("tags") or []) if isinstance(t, dict)),
+                "license": lic,
+                "license_url": r.get("license_url"),
+                "author": r.get("creator") or r.get("source") or "Openverse",
+                "width": r.get("width") or 0, "height": r.get("height") or 0, "mime": "image/jpeg",
             })
         return out
 
@@ -2119,6 +2176,8 @@ class ImageGeneratorAgent:
                         "source": "web_free",
                         "source_provider": f"Wikimedia Commons ({cand.get('author', 'Verified Contributor')})",
                         "source_url": c_url,
+                    "page_url": cand.get("page_url") or c_url,
+                    "source_title": cand.get("title", ""),
                         "prompt": clean_prompt,
                         "image_path": str(dest_path),
                         "visual_quality": q_info,
@@ -2320,6 +2379,9 @@ class ImageGeneratorAgent:
           Right: Two bold black bullet point specs (e.g., • Cartridge - 7.62×39 mm. / • No. built - 75 million)
         """
         poster_spec = image_data.get("weaponx_poster_spec") or {}
+        user_prompt = image_data.get("master_image_prompt") or ""
+        if self._use_verified_evolution_poster(user_prompt, clean_topic, poster_spec):
+            return self._acquire_evolution_poster(user_prompt, clean_topic, dest_path)
         gemini_prompt = (
             poster_spec.get("gemini_prompt")
             or image_data.get("master_image_prompt")
@@ -2361,6 +2423,47 @@ class ImageGeneratorAgent:
             ),
             "attempts_taken": 1,
             "prompt": gemini_prompt,
+        }
+
+    @staticmethod
+    def _use_verified_evolution_poster(user_prompt: str, clean_topic: str, poster_spec: Dict[str, Any]) -> bool:
+        """Evolution/comparison prompts, and any non-firearm topic whose rows fell back to the built-in
+        rifle list (Gemini unavailable), use the Wikipedia-verified evolution poster."""
+        from agents import evolution_poster
+        if evolution_poster.is_evolution_prompt(user_prompt):
+            return True
+        names = " ".join(str(r.get("name", "")) for r in (poster_spec.get("comparison_items") or []))
+        is_firearm_topic = bool(re.search(r"rifle|gun|pistol|firearm|carbine|ak-?47|kalashnikov|small arms", clean_topic, re.I))
+        return bool(names) and not is_firearm_topic and bool(re.search(r"AK-47|M16|HK416|FN SCAR", names))
+
+    def _acquire_evolution_poster(self, user_prompt: str, clean_topic: str, dest_path: Path) -> Dict[str, Any]:
+        from agents import evolution_poster
+        print(f"   🔥 [{self.AGENT_NAME}] Building verified evolution poster for '{clean_topic}' (Wikipedia data + photos)...")
+        cache = Path(config.OUTPUT_DIR) / "cache" / "evolution_photos"
+        res = evolution_poster.make_poster(user_prompt, clean_topic, Path(dest_path), cache)
+        if res.get("error"):
+            # Never fall back to unrelated equipment: stop with a clear reason instead
+            raise RuntimeError(f"WeaponX evolution poster: {res['error']}")
+        return {
+            "scene_number": 1,
+            "image_path": str(dest_path),
+            "source": "weaponx_lab_poster",
+            "source_url": res.get("list_page") and f"https://en.wikipedia.org/wiki/{res['list_page'].replace(' ', '_')}",
+            "source_domain": "en.wikipedia.org",
+            "source_provider": "WeaponX Labs verified evolution poster (Wikipedia data, Commons photos)",
+            "license": "Photos CC/PD from Wikimedia Commons — see photo_credits",
+            "author": "@WeaponXLabs Studio Engine",
+            "source_verified": True,
+            "topic_matched": True,
+            "topic_match_score": 99,
+            "topic_match_reason": f"{res['rows']} verified historical→modern rows for '{res['prompt']['topic']}'",
+            "evolution_pairs": res["pairs"],
+            "photo_credits": res["credits"],
+            "sources": res["sources"],
+            "visual_quality": {"output_resolution": f"{self.target_width}x{self.target_height}", "passed": True,
+                               "cutouts": res["cutouts"], "photos": res["photos"]},
+            "attempts_taken": 1,
+            "prompt": user_prompt[:500],
         }
 
     def _load_font(self, size: int, bold: bool = True, condensed: bool = False, family: str = "default") -> Any:

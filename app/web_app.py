@@ -539,6 +539,12 @@ async def upload_scene_image(project_id: str, scene_idx: int, file: UploadFile =
             scenes[idx]["image_path"] = str(img_path)
             scenes[idx]["visual_source"] = "manual_upload"
             scenes[idx]["visual_source_url"] = None
+            _sync_visual_record(project, scene_idx, {
+                "image_path": str(img_path), "source": "manual_upload", "source_url": None, "source_domain": "local",
+                "source_provider": "User upload", "license": "Provided by the user", "author": "User",
+                "source_verified": True, "topic_matched": True, "topic_match_score": None, "content_verified": None,
+                "topic_match_reason": "Uploaded by the user", "prompt": None,
+            })
 
         image_paths = project.get("image_paths", [])
         if 0 <= idx < len(image_paths):
@@ -1037,6 +1043,20 @@ def get_scene_clip(project_id: str, scene_idx: int):
         raise HTTPException(status_code=404, detail="Scene clip not found")
     return FileResponse(p, headers=NO_CACHE_HEADERS)
 
+def _sync_visual_record(project: Dict[str, Any], scene_idx: int, fields: Dict[str, Any]) -> None:
+    """Keep the per-scene image record (read by QA / publish gate) in step with the scene after an
+    upload or regenerate, instead of leaving the old image's provenance behind."""
+    for records in ((project.get("image_report") or {}).get("visual_records"), project.get("visual_records")):
+        if not isinstance(records, list):
+            continue
+        rec = next((r for r in records if r.get("scene_number") == scene_idx), None)
+        if rec is None:
+            rec = {"scene_number": scene_idx}
+            records.append(rec)
+        for k in ("visual_quality", "content_check", "source_title", "page_url"):
+            rec.pop(k, None)
+        rec.update(fields)
+
 @app.post("/api/projects/{project_id}/scenes/{scene_idx}/text")
 def update_scene_text(project_id: str, scene_idx: int, req: SceneTextRequest):
     """
@@ -1117,6 +1137,13 @@ def generate_scene_image_endpoint(project_id: str, scene_idx: int, req: SceneIma
         scenes[idx]["visual_source"] = res.get("source", "ai_generated")
         scenes[idx]["visual_source_url"] = res.get("source_url")
         scenes[idx]["visual_prompt"] = res.get("prompt", prompt)
+        vqa = (res.get("visual_quality") or {}).get("vision_qa") or {}
+        _sync_visual_record(project, scene_idx, {
+            "image_path": str(img_path), "source": res.get("source", "ai_generated"), "source_url": res.get("source_url"),
+            "source_provider": res.get("source_provider"), "license": res.get("license"),
+            "topic_match_score": vqa.get("score"), "content_verified": vqa.get("passed") is True,
+            "topic_match_reason": vqa.get("reason") or "Regenerated from the scene editor", "prompt": res.get("prompt", prompt),
+        })
 
     image_paths = project.get("image_paths", [])
     if 0 <= idx < len(image_paths):
