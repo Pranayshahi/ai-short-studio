@@ -1,0 +1,15 @@
+services:
+  ai-shorts-studio:
+    build: .
+    container_name: ai_shorts_studio
+    ports:
+      - "127.0.0.1:8000:8000"  # only this computer; remove "127.0.0.1:" to expose (set STUDIO_API_TOKEN first)
+    environment:
+      - SCHEDULE_TIME=20:00
+      - SCHEDULE_TIMEZONE=Asia/Kolkata
+      - DEFAULT_PRIVACY_STATUS=private
+    volumes:
+      - ./output:/app/output
+      - ./credentials:/app/credentials
+      - ./.env:/app/.env
+    restart: unless-stopped

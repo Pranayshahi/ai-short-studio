@@ -1,0 +1,22 @@
+# --- Secrets: never commit ---
+.env
+credentials/
+
+# --- Generated output, runtime state, logs ---
+output/
+*.log
+
+# --- Local environments & caches ---
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# --- Generated / large media (re-created by the app) ---
+assets/audio/ai_generated/
+assets/audio/library/
+assets/audio/youtube/
+
+# --- Third-party project with its own git history ---
+# Clone it separately: git clone https://github.com/calesthio/OpenMontage.git openmontage
+openmontage/
