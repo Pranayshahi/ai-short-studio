@@ -1,16 +1,21 @@
 """
-Smart auto-publishing.
+Upload gate (channel rule: NOTHING is ever made public automatically).
 
-A video may be published without a human only if:
+Every upload is PRIVATE. You make videos public or schedule them yourself in YouTube Studio;
+YouTubePublisher enforces this at the lowest level (YouTube only ever receives "private").
+
+A video is uploaded without asking only if:
   1. Verify-video QA passed, and
-  2. EVERY scene image is either a verified real photo (web source) or an AI image whose
-     content was actually checked (content_verified True). Unverified AI images block it.
+  2. EVERY scene image is a verified real photo, a content-checked AI image, or your own upload,
+  3. and the title/description/tags contain no prompt text.
 
 AUTO_PUBLISH_MODE (.env):
-  "review" (default) - gate passes: upload PRIVATE and ask for approval (Approve = go live).
-  "auto"             - gate passes: upload and go PUBLIC immediately.
-  "off"              - never upload automatically; always ask.
-Gate fails (any mode): nothing is uploaded; an approval request lists the reasons.
+  "review" (default) - gate passes: upload PRIVATE and ask you to approve the details.
+  "auto"             - gate passes: upload PRIVATE without asking (still never public).
+  "off"              - never upload automatically; always ask first.
+Gate fails (any mode): nothing is uploaded; a review request lists the reasons.
+Approve = keep/upload it PRIVATE with the final details ("approved_private"); then publish or
+schedule it in YouTube Studio.
 """
 from __future__ import annotations
 
@@ -73,21 +78,25 @@ def _summary(project: Dict[str, Any]) -> str:
             f"Project: {project.get('id')}")
 
 
-def _upload(project: Dict[str, Any], go_public: bool) -> Dict[str, Any]:
+def _upload_private(project: Dict[str, Any]) -> Dict[str, Any]:
     from app.agents.youtube_publisher import YouTubePublisher
     res = YouTubePublisher.upload_short(
         video_path=project["video_path"],
         title=project.get("title") or project.get("topic"),
         description=project.get("description", ""),
         tags=project.get("tags", []),
-        privacy_status="public" if go_public else "private",
-        require_approval_before_live=not go_public,
+        privacy_status="private",
+        require_approval_before_live=True,
         project_dir=project.get("project_dir"),
     )
     project["youtube"] = res
-    project["status"] = "published" if res.get("approval_status") == "approved_live" else "pending_approval"
+    project["status"] = "pending_approval"
     StorageManager.save_project(project)
     return res
+
+
+def _studio_link(res: Dict[str, Any]) -> str:
+    return res.get("studio_edit_url") or res.get("studio_channel_url") or res.get("url") or ""
 
 
 def publish_or_request_approval(project: Dict[str, Any]) -> Dict[str, Any]:
@@ -97,45 +106,49 @@ def publish_or_request_approval(project: Dict[str, Any]) -> Dict[str, Any]:
     pid = project["id"]
 
     if ok and MODE == "auto":
-        res = _upload(project, go_public=True)
-        notifier.send(_summary(project) + f"\n✅ Published automatically: {res.get('url')}", title="Short published")
-        return {"action": "published", "youtube": res}
+        res = _upload_private(project)
+        notifier.send(_summary(project) + f"\n🔒 Uploaded as PRIVATE (passed every check).\n"
+                      f"Make it public or schedule it in YouTube Studio: {_studio_link(res)}", title="Uploaded (private)")
+        return {"action": "uploaded_private", "youtube": res}
 
     if ok and MODE == "review":
-        res = _upload(project, go_public=False)
-        notifier.send(_summary(project) + f"\n🔒 Uploaded as PRIVATE draft: {res.get('url')}\nPassed every check. Approve to make it public.",
-                      buttons=notifier.approval_buttons(pid), title="Ready to publish")
+        res = _upload_private(project)
+        notifier.send(_summary(project) + f"\n🔒 Uploaded as PRIVATE draft: {res.get('url')}\nPassed every check. "
+                      "Approve to confirm the details; it stays private until you publish or schedule it in YouTube Studio.",
+                      buttons=notifier.approval_buttons(pid), title="Ready for your review")
         return {"action": "uploaded_private_awaiting_approval", "youtube": res}
 
     project["status"] = "awaiting_review"
     StorageManager.save_project(project)
-    why = "\n".join(f"• {r}" for r in reasons) or "• Auto-publish is turned off"
-    notifier.send(_summary(project) + f"\n⚠️ Needs your review before publishing:\n{why}\nApprove uploads it and makes it public.",
+    why = "\n".join(f"• {r}" for r in reasons) or "• Automatic upload is turned off"
+    notifier.send(_summary(project) + f"\n⚠️ Needs your review:\n{why}\nApprove uploads it as PRIVATE "
+                  "(you publish or schedule it yourself in YouTube Studio).",
                   buttons=notifier.approval_buttons(pid), title="Review needed")
     return {"action": "awaiting_review", "reasons": reasons}
 
 
 def handle_decision(action: str, project_id: str) -> str:
-    """Approve/Reject from Telegram (or any caller). Returns a short human-readable result."""
+    """Approve/Reject from Telegram (or any caller). Approve never makes a video public."""
     project = StorageManager.get_project_by_id(project_id)
     if not project:
         return f"Project {project_id} not found."
     if action == "reject":
         project["status"] = "rejected"
         StorageManager.save_project(project)
-        return f"Rejected: {project.get('title') or project_id}. Nothing was published."
+        return f"Rejected: {project.get('title') or project_id}. Nothing was uploaded or changed on YouTube."
     if action == "approve":
-        if project.get("status") == "published":
-            return "Already published."
+        if project.get("status") in ("approved_private", "published"):
+            return "Already approved. It is private on YouTube; publish or schedule it in YouTube Studio."
         from app.agents.youtube_publisher import YouTubePublisher
         yt = project.get("youtube") or {}
         if yt.get("video_id") and not str(yt.get("video_id")).startswith("staged_"):
-            res = YouTubePublisher.approve_and_go_live(project=project, title=project.get("title"),
-                                                       description=project.get("description"), tags=project.get("tags"))
-            project["youtube"] = res
-            project["status"] = "published"
-            StorageManager.save_project(project)
+            approve = getattr(YouTubePublisher, "approve_keep_private", None) or YouTubePublisher.approve_and_go_live
+            res = approve(project=project, title=project.get("title"),
+                          description=project.get("description"), tags=project.get("tags"))
         else:
-            res = _upload(project, go_public=True)
-        return f"Published: {res.get('url')}"
+            res = _upload_private(project)
+        project["youtube"] = res
+        project["status"] = "approved_private"
+        StorageManager.save_project(project)
+        return f"Approved and kept PRIVATE. Publish or schedule it in YouTube Studio: {_studio_link(res)}"
     return "Unknown action."

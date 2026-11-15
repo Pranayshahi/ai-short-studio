@@ -76,7 +76,7 @@ def send(text: str, buttons: Optional[List[List[Dict[str, str]]]] = None, title:
 
 def approval_buttons(project_id: str) -> List[List[Dict[str, str]]]:
     return [[
-        {"text": "✅ Approve & publish", "callback_data": f"approve:{project_id}"[:64]},
+        {"text": "✅ Approve (stays private)", "callback_data": f"approve:{project_id}"[:64]},
         {"text": "❌ Reject", "callback_data": f"reject:{project_id}"[:64]},
     ]]
 

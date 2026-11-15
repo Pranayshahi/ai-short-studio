@@ -3,7 +3,7 @@ Health checks + daily summary.
 
 check_all() runs every HEALTH_CHECK_MINUTES. It alerts only when a check CHANGES state
 (ok -> failing, or failing -> recovered), so a long outage doesn't spam your phone.
-daily_summary() reports the last 24 h: videos made, published, awaiting review, failed (and why).
+daily_summary() reports the last 24 h: videos made, approved (private), awaiting review, failed (and why).
 """
 from __future__ import annotations
 
@@ -178,13 +178,13 @@ def daily_summary(send: bool = True) -> str:
         except ValueError:
             continue
     by = lambda *st: [p for p in recent if p.get("status") in st]
-    published = by("published")
+    published = by("published", "approved_private")
     pending = by("pending_approval", "awaiting_review")
     failed = by("failed")
     lines = [f"📊 Daily report · {datetime.now():%d %b %Y}",
-             f"Videos made: {len(recent)} · Published: {len(published)} · Awaiting you: {len(pending)} · Failed: {len(failed)}"]
+             f"Videos made: {len(recent)} · Approved (private on YouTube): {len(published)} · Awaiting you: {len(pending)} · Failed: {len(failed)}"]
     for p in published:
-        lines.append(f"✅ {p.get('title') or p.get('topic')}: {(p.get('youtube') or {}).get('url', '')}")
+        lines.append(f"🔒 {p.get('title') or p.get('topic')} (private; publish/schedule in Studio): {(p.get('youtube') or {}).get('url', '')}")
     for p in pending:
         why = "; ".join((p.get("publish_gate") or {}).get("reasons", [])[:2]) or "approve to go live"
         lines.append(f"⏳ {p.get('title') or p.get('topic')} ({why})")
