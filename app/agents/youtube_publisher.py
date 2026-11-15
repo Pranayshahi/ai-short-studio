@@ -135,10 +135,16 @@ class YouTubePublisher:
         category_id: str = "28",
         made_for_kids: bool = False,
         language: str = "en",
+        topic: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Ensures every YouTube Studio field is populated for channel UC4KV67NYzLi8JlrfB9J4hGg (@WeaponXLabs).
         """
+        try:
+            from agents.youtube_metadata import clean_metadata
+            title, description, tags = clean_metadata(title or "", description or "", list(tags or []), topic or title or "")
+        except Exception as e:
+            print(f"[YouTubePublisher] metadata guard skipped: {e}")
         clean_title = (title or "WeaponX Labs Breakdown #Shorts").strip()
         if "#shorts" not in clean_title.lower():
             if len(clean_title) <= 91:

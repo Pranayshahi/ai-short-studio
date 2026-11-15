@@ -132,8 +132,18 @@ class ContentAnalyserAgent:
 
     def _clean_subject_name(self, topic: str) -> str:
         """Strips emojis, subtitle pipes, and noise from topic to produce a clean subject name."""
+        text = str(topic or "")
+        # A pasted request: use its **TITLE:** / **TOPIC:** line, or its first line, never the whole text
+        m = re.search(r"\*\*TITLE:\*\*\s*(.+)", text) or re.search(r"(?im)^\s*TITLE\s*:\s*(.+)$", text)
+        if m:
+            return m.group(1).strip().strip("*").strip()[:90]
+        m = re.search(r"\*\*TOPIC:\*\*\s*(.+)", text) or re.search(r"(?im)^\s*TOPIC\s*:\s*(.+)$", text)
+        if m:
+            text = m.group(1)
+        elif "\n" in text.strip():
+            text = next((ln for ln in text.splitlines() if ln.strip()), text)
         # Shared rule (handles en/em dashes, colons, pipes): "X – subtitle" -> "X"
-        return subject_core(topic) or str(topic).strip()
+        return (subject_core(text) or text.strip())[:90]
 
     def run(
         self,
@@ -610,7 +620,7 @@ class ContentAnalyserAgent:
                 "title": f"{clean_name}: WeaponX Lab Breakdown 🔥 #Shorts",
                 "description": (
                     f"{short_hook} {core_fact}\n\n"
-                    f"WeaponX Lab 10s 9:16 Short on {topic}.\n"
+                    f"{clean_name}: the key facts in 10 seconds.\n"
                     "#Shorts #WeaponXLabs #MilitaryTech #Defense #Technology"
                 ),
                 "tags": ["weaponx lab", clean_name.lower(), "shorts", "military", "defensetech"],

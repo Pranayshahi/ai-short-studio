@@ -56,6 +56,12 @@ def evaluate(project: Dict[str, Any]) -> Tuple[bool, List[str]]:
             reasons.append(f"Scene {n}: unverified image source '{src}'")
     if not project.get("video_path"):
         reasons.append("No rendered video")
+    try:
+        from agents.youtube_metadata import leaks
+        reasons += [f"Metadata: {m}" for m in leaks(project.get("title") or "", project.get("description") or "",
+                                                     project.get("tags") or [], project.get("topic") or "")]
+    except Exception as e:
+        reasons.append(f"Metadata check failed: {e}")
     return (not reasons), reasons
 
 

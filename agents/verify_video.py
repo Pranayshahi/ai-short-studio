@@ -114,6 +114,25 @@ class VerifyVideoAgent:
         all_checks.extend(scene_check["checks"])
 
         # ------------------------------------------------------------------
+        # 7. YouTube metadata must not contain the creator's prompt (blocking)
+        # ------------------------------------------------------------------
+        try:
+            from agents.youtube_metadata import leaks
+            meta_problems = leaks(project_record.get("title") or "", project_record.get("description") or "",
+                                  project_record.get("tags") or [], project_record.get("topic") or "")
+        except Exception as e:
+            meta_problems = [f"metadata check error: {e}"]
+        meta_ok = not meta_problems
+        all_checks.append({
+            "name": "YouTube Metadata Clean (no prompt text)",
+            "stage": "publisher",
+            "passed": meta_ok,
+            "detail": "Title, description and tags contain no request/instruction text." if meta_ok
+                      else "; ".join(meta_problems),
+            "remediation": None if meta_ok else "Re-run agents.youtube_metadata.clean_metadata on this project.",
+        })
+
+        # ------------------------------------------------------------------
         # Aggregate Overall Score & Final Verdict
         # ------------------------------------------------------------------
         stage_scores = [
@@ -135,6 +154,8 @@ class VerifyVideoAgent:
         )
         if project_record.get("video_path") and not video_exists:
             qa_passed = False
+        if not meta_ok:
+            qa_passed = False  # prompt text in the title/description must never be published
         if not scene_check["passed"]:
             # Repeated pictures or a different model on screen must never be reported as PASSED
             qa_passed = False

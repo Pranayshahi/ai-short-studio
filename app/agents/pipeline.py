@@ -356,11 +356,16 @@ class ShortsPipeline:
                 scene_clip_paths=[s.get("clip_path") for s in script_data.get("scenes", [])],
             )
 
+            # Metadata guard: the pasted request (or any instruction text) must never reach YouTube
+            from agents.youtube_metadata import clean_metadata
+            clean_title, clean_description, clean_tags = clean_metadata(
+                script_data.get("title_hindi") if is_hindi else script_data["title"],
+                script_data["description"], script_data["tags"], topic_title)
             project_record.update({
                 "progress_step": "Verify-video: Finalizing & verifying image and video...",
-                "title": script_data.get("title_hindi") if is_hindi else script_data["title"],
-                "description": script_data["description"],
-                "tags": script_data["tags"],
+                "title": clean_title,
+                "description": clean_description,
+                "tags": clean_tags,
                 "scenes": script_data["scenes"],
                 "duration": voice_result["total_duration"],
                 "target_duration": target_dur,

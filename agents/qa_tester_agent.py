@@ -134,6 +134,9 @@ class QATesterAgent:
         # 15. Output Projects & Asset Media Integrity
         results.extend(self._check_produced_projects())
 
+        # 16. YouTube metadata never contains the creator's prompt (regression for the leaked-prompt bug)
+        results.extend(self._check_youtube_metadata_guard())
+
         total = len(results)
         passed = sum(1 for r in results if r.get("status") == "PASSED")
         failed = sum(1 for r in results if r.get("status") == "FAILED")
@@ -152,6 +155,40 @@ class QATesterAgent:
             "timestamp": datetime.now().isoformat(),
             "results": results,
         }
+
+    def _check_youtube_metadata_guard(self) -> List[Dict[str, Any]]:
+        """Regression: a pasted request must never leak into title/description/tags."""
+        t0 = time.time()
+        try:
+            from agents.youtube_metadata import clean_metadata, leaks
+            prompt = ("Create a premium-quality military technology evolution infographic in **VERTICAL 9:16 PORTRAIT FORMAT "
+                      "(1080 × 1920)**.\n\n**TOPIC:** Infantry Combat Vehicles\n\n**TITLE:** THE EVOLUTION OF Infantry Combat "
+                      "Vehicles (2026 EDITION)\n\n**VISUAL LAYOUT:**\n\nCreate a clean, professional comparison infographic "
+                      "inspired by a military equipment museum catalogue.\n\nDivide the infographic into two main columns:\n\n"
+                      "- LEFT COLUMN: HISTORICAL ROOTS (ORIGINAL)\nVISUAL STYLE:\n- Bold, modern black typography.\n- 6–8 comparison rows.")
+            bad_title = "equipment museum catalogue. Divide the infographic into two main columns: WeaponX Lab Breakdown 🔥 #Shorts"
+            bad_desc = ("The BMP-1 was the first mass-produced IFV.\n\nWeaponX Lab 10s 9:16 Short on " + prompt
+                        + "\n\nPhoto credits:\n• U.S. Army · Public domain · https://commons.wikimedia.org/wiki/File:X.jpg\n#Shorts")
+            bad_tags = ["weaponx lab", prompt.lower()[:200], "shorts"]
+            assert leaks(bad_title, bad_desc, bad_tags, prompt), "leak detector missed the leaked prompt"
+            t, d, g = clean_metadata(bad_title, bad_desc, bad_tags, prompt)
+            assert not leaks(t, d, g, prompt), f"cleaner left prompt text: {leaks(t, d, g, prompt)}"
+            assert t == "Infantry Combat Vehicles #Shorts", f"unexpected title {t!r}"
+            assert "BMP-1 was the first" in d and "Photo credits:" in d and "https://commons" in d, "real content was removed"
+            for word in ("VERTICAL", "9:16", "Divide", "LEFT COLUMN", "VISUAL STYLE", "**", "typography"):
+                assert word not in d, f"description still contains {word!r}"
+            assert all(len(x) <= 30 for x in g), "over-long tag survived"
+            # A normal script must pass through untouched
+            nt, nd, ng = clean_metadata("F-22 Raptor 🇺🇸 #Shorts", "The F-22 first flew in 1997.\n\n#Shorts", ["f22", "usaf"], "F-22 Raptor")
+            assert nt == "F-22 Raptor 🇺🇸 #Shorts" and "first flew in 1997" in nd, "clean metadata was altered"
+            return [{"name": "YouTube Metadata Guard (no prompt leakage)", "category": "Publishing Safety", "status": "PASSED",
+                     "duration_ms": int((time.time() - t0) * 1000),
+                     "details": "Leaked-prompt title/description/tags are detected, cleaned, and normal metadata is untouched.",
+                     "remediation": None}]
+        except Exception as e:
+            return [{"name": "YouTube Metadata Guard (no prompt leakage)", "category": "Publishing Safety", "status": "FAILED",
+                     "duration_ms": int((time.time() - t0) * 1000), "details": str(e),
+                     "remediation": "Fix agents/youtube_metadata.py so prompt text can never reach YouTube."}]
 
     def _check_python_syntax(self) -> List[Dict[str, Any]]:
         """Validates that all Python files in the project compile with zero syntax errors."""
