@@ -21,13 +21,24 @@ def main():
     parser.add_argument("--publish", action="store_true", help="Automatically publish the generated video to YouTube")
     parser.add_argument("--server", action="store_true", help="Launch the Web Studio Dashboard")
     parser.add_argument("--port", type=int, default=8000, help="Port for Web Studio (default: 8000)")
-    parser.add_argument("--auth-youtube", action="store_true", help="Authenticate with your YouTube channel")
+    parser.add_argument("--auth-youtube", action="store_true", help="Authenticate a YouTube channel (see --channel)")
+    parser.add_argument("--channel", type=str, default=None,
+                        help="Channel key/handle for --auth-youtube or --generate (e.g. weaponxlabs, autoflashx); default = registry default")
+    parser.add_argument("--list-channels", action="store_true", help="List registered YouTube channels and their auth state")
     parser.add_argument("--host", type=str, default=os.getenv("STUDIO_HOST", "127.0.0.1"),
                         help="Interface to bind (default 127.0.0.1 = this computer only; use 0.0.0.0 to expose on the network)")
     parser.add_argument("--reload", action="store_true",
                         help="Auto-reload on code changes (development only; restarts kill running generations)")
 
     args = parser.parse_args()
+
+    if args.list_channels:
+        from agents import youtube_channels as reg
+        for key, ch in reg.all_channels().items():
+            print(f"{'*' if ch['is_default'] else ' '} {key:14} {ch.get('handle',''):16} {ch.get('id','')}  "
+                  f"{'authorized' if ch['authorized'] else 'NOT authorized'}")
+        print("(* = default channel)")
+        return
 
     if args.auth_youtube:
         import time
@@ -44,9 +55,12 @@ def main():
                 if YouTubePublisher.auto_discover_client_secrets():
                     break
                 time.sleep(2)
-        print("[AI Shorts Studio] Launching YouTube OAuth authentication flow...")
-        YouTubePublisher.get_authenticated_service()
-        print("✅ YouTube authentication successful! Credentials saved.")
+        from agents import youtube_channels as reg
+        ch = reg.get(args.channel)
+        print(f"[AI Shorts Studio] Launching YouTube OAuth for channel '{ch['key']}' ({ch.get('handle')}).")
+        print(f"  In the Google window, pick the account/channel for {ch.get('handle')}; another channel will be refused.")
+        YouTubePublisher.get_authenticated_service(channel=ch["key"])
+        print(f"✅ YouTube authentication successful for {ch.get('handle')}! Token saved to {ch['token_path'].name}")
         return
 
     if args.server:
@@ -55,7 +69,7 @@ def main():
 
     if args.generate or args.topic:
         pipeline = ShortsPipeline()
-        result = pipeline.run(custom_topic=args.topic, auto_publish=args.publish, style=args.style)
+        result = pipeline.run(custom_topic=args.topic, auto_publish=args.publish, style=args.style, channel=args.channel)
         print(f"\n🎉 Done! Video produced at: {result.get('video_path')}")
         return
 

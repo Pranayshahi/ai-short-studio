@@ -53,7 +53,8 @@ class ShortsPipeline:
         language: str = "en",
         voice: Optional[str] = None,
         music_track: Optional[str] = None,
-        music_volume: Optional[float] = 0.22
+        music_volume: Optional[float] = 0.22,
+        channel: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Initializes a pending project record immediately using 'topic-agent'
@@ -105,6 +106,7 @@ class ShortsPipeline:
             "voice": voice,
             "music_track": music_track,
             "music_volume": music_volume,
+            "channel": self._channel_key(channel),
             "status": "in_progress",
             "progress_step": "topic-agent: Deep researching topic & sending instructions...",
             "project_dir": str(project_dir),
@@ -267,6 +269,16 @@ class ShortsPipeline:
                 seen.add(link)
                 author = re.sub(r"\s+", " ", str(v.get("author") or "Unknown")).strip()[:60]
                 credits.append(f"• {author} · {v.get('license') or 'see source'} · {link}")
+            # Composite WeaponX posters: describe what the poster actually shows, and credit its photos
+            # compactly (only licences that require it, short links) instead of the long per-photo block
+            from agents import evolution_poster as _evp
+            poster_rec = next((v for v in visual_records if v.get("ranked_items") or v.get("evolution_pairs")), None)
+            if poster_rec:
+                body = _evp.description_body(poster_rec)
+                tags_line = next((ln for ln in script_data.get("description", "").splitlines() if ln.startswith("#")), "#Shorts")
+                intro = "" if poster_rec.get("ranked_items") else (script_data.get('title') or '').split(' #')[0].replace(': WeaponX Lab Breakdown 🔥', '')
+                script_data["description"] = "\n\n".join(x for x in (intro, body, tags_line) if x)
+                credits = _evp.compact_credits(poster_rec.get("photo_credits") or [])
             if credits and "Photo credits:" not in script_data.get("description", ""):
                 script_data["description"] = (script_data.get("description", "").rstrip()
                                               + "\n\nPhoto credits:\n" + "\n".join(credits[:12]))[:4900]
@@ -354,6 +366,7 @@ class ShortsPipeline:
                 music_path=resolved_music_path,
                 music_volume=music_volume,
                 scene_clip_paths=[s.get("clip_path") for s in script_data.get("scenes", [])],
+                scene_effects=self._scene_effects(script_data.get("scenes", []), project_record),
             )
 
             # Metadata guard: the pasted request (or any instruction text) must never reach YouTube
@@ -414,6 +427,7 @@ class ShortsPipeline:
                         description=script_data["description"],
                         tags=script_data["tags"],
                         project_dir=str(project_dir),
+                        channel=project_record.get("channel"),
                     )
                     project_record["youtube"] = upload_res
                     # Uploads are private until approved; only mark 'published' when actually live
@@ -444,6 +458,19 @@ class ShortsPipeline:
             project_record["progress_step"] = f"Failed: {e}"
             StorageManager.save_project(project_record)
             raise
+
+    @staticmethod
+    def _channel_key(channel: Optional[str]) -> str:
+        """Validated channel key for a new project (default channel when none given)."""
+        from agents import youtube_channels as reg
+        return reg.get(channel)["key"]
+
+    @staticmethod
+    def _scene_effects(scenes, project) -> list:
+        """Per-scene motion & effects: scene overrides > project scene_defaults > 'auto'."""
+        from agents import scene_effects as sfx
+        defaults = (project or {}).get("scene_defaults") or {}
+        return [sfx.resolve(sc, defaults) for sc in scenes]
 
     def _maybe_hook_clip(self, scenes, image_paths, scene_durations, project_dir, topic, project_record) -> None:
         """Animates scene 1's verified image into a short motion clip (HOOK_CLIP_ENGINE=auto|off|<engine>)."""
@@ -588,6 +615,7 @@ class ShortsPipeline:
             music_path=music_path,
             music_volume=project.get("music_volume"),
             scene_clip_paths=[s.get("clip_path") for s in scenes],
+            scene_effects=self._scene_effects(scenes, project),
         )
 
         # 3. Update project metadata

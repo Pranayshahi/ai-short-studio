@@ -48,7 +48,13 @@ def _check_wikimedia() -> Tuple[bool, str]:
 def _check_youtube() -> Tuple[bool, str]:
     try:
         from app.agents.youtube_publisher import YouTubePublisher
-        return (True, "authorized") if YouTubePublisher.is_authenticated() else (False, "not authorized: run `python main.py --auth-youtube`")
+        from agents import youtube_channels as reg
+        parts, all_ok = [], True
+        for key, ch in reg.all_channels().items():
+            ok = YouTubePublisher.is_authenticated(key)
+            all_ok = all_ok and ok
+            parts.append(f"{ch.get('handle', key)}: {'authorized' if ok else 'NOT authorized (python main.py --auth-youtube --channel ' + key + ')'}")
+        return all_ok, "; ".join(parts)
     except Exception as e:
         return False, f"check failed: {e}"
 

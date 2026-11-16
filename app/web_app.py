@@ -154,6 +154,13 @@ class GenerateRequest(BaseModel):
     voice: Optional[str] = None  # 'hi-IN-MadhurNeural', 'hi-IN-SwaraNeural', etc.
     music_track: Optional[str] = None  # 'yt_epic_bravery', 'ai_cinematic', etc.
     music_volume: Optional[float] = 0.22
+    # Default motion & image effects for every scene of the new video (see agents/scene_effects.py)
+    motion: Optional[str] = None
+    motion_strength: Optional[str] = None
+    focus_point: Optional[Dict[str, float]] = None
+    effects: Optional[Dict[str, Any]] = None
+    # YouTube channel key/handle this video is for (weaponxlabs, autoflashx, ...); default = registry default
+    channel: Optional[str] = None
 
 class PublishRequest(BaseModel):
     privacy_status: Optional[str] = "private"
@@ -292,10 +299,27 @@ class SaveMusicToLibraryRequest(BaseModel):
 def get_favicon():
     return Response(status_code=204)
 
+def _ui_build_id() -> str:
+    """Changes whenever the dashboard's files change, so an open tab can notice new code."""
+    try:
+        return str(max(int(p.stat().st_mtime) for p in STATIC_DIR.glob("*") if p.is_file()))
+    except ValueError:
+        return "0"
+
+
 @app.get("/")
 def get_dashboard():
     index_file = STATIC_DIR / "index.html"
-    return FileResponse(str(index_file))
+    html = index_file.read_text(encoding="utf-8")
+    build = _ui_build_id()
+    # Stamp the build id into the page and bust the browser cache of its script/stylesheet
+    html = html.replace("?v=20", f"?v={build}").replace("<head>", f'<head><meta name="ui-build" content="{build}">', 1)
+    return Response(content=html, media_type="text/html", headers=NO_CACHE_HEADERS)
+
+
+@app.get("/api/ui-build")
+def get_ui_build():
+    return JSONResponse(content={"build": _ui_build_id()}, headers=NO_CACHE_HEADERS)
 
 @app.get("/api/projects")
 def list_projects():
@@ -423,10 +447,24 @@ def _start_generation(req, audio_mode, with_voice, with_music, duration, backgro
             language=req.language or "en",
             voice=req.voice,
             music_track=req.music_track,
-            music_volume=req.music_volume
+            music_volume=req.music_volume,
+            channel=req.channel,
         )
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Unknown YouTube channel: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to prepare project: {e}")
+
+    # Video-wide default motion & effects chosen at creation time
+    from agents import scene_effects as _sfx
+    try:
+        _defaults = _sfx.validate({"motion": req.motion, "motion_strength": req.motion_strength,
+                                   "focus_point": req.focus_point, "effects": req.effects})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if _defaults:
+        project_record["scene_defaults"] = _defaults
+        StorageManager.save_project(project_record)
 
     def run_job(prepared_project, prepared_topic_info, auto_publish, style, with_voice, with_music, duration, audio_mode, language, voice, music_track, music_volume):
         try:
@@ -1291,6 +1329,7 @@ def publish_to_youtube(project_id: str, req: PublishRequest):
             tags=project.get("tags", ["shorts", "weaponx lab"]),
             privacy_status=req.privacy_status,
             require_approval_before_live=req.require_approval_before_live,
+            channel=project.get("channel"),
             project_dir=project.get("project_dir"),
             category_id=req.category_id or "28",
             made_for_kids=req.made_for_kids,
@@ -1306,9 +1345,8 @@ def publish_to_youtube(project_id: str, req: PublishRequest):
 @app.post("/api/publish/{project_id}/approve")
 def approve_and_publish_live(project_id: str, req: ApprovePublishRequest):
     """
-    Step 2: Triggered when the user clicks 'Approve & Go Live'.
-    Switches the saved video on channel UC4KV67NYzLi8JlrfB9J4hGg from 'private' (draft)
-    to 'public' so it immediately goes LIVE on YouTube Shorts.
+    Step 2: 'Approve' — updates the video's fields on YouTube and keeps it PRIVATE.
+    The app never makes a video public; the owner publishes or schedules it in YouTube Studio.
     """
     project = StorageManager.get_project_by_id(project_id)
     if not project:
@@ -1327,9 +1365,11 @@ def approve_and_publish_live(project_id: str, req: ApprovePublishRequest):
             title=project.get("title"),
             description=project.get("description"),
             tags=project.get("tags"),
+            channel=project.get("channel"),
         )
         project["youtube"] = res
-        project["status"] = "published"
+        # Approved but still PRIVATE on YouTube: the owner publishes/schedules it in YouTube Studio
+        project["status"] = "approved_private"
         StorageManager.save_project(project)
         return {"status": "success", "youtube": res, "project": project}
     except Exception as e:
@@ -1355,7 +1395,8 @@ def get_studio_settings():
             "youtube_channel_id": saved.get("youtube_channel_id", config.YOUTUBE_TARGET_CHANNEL_ID),
             "youtube_studio_url": f"https://studio.youtube.com/channel/{saved.get('youtube_channel_id', config.YOUTUBE_TARGET_CHANNEL_ID)}",
             "youtube_oauth_configured": YouTubePublisher.is_configured(),
-            "youtube_authenticated": YouTubePublisher.is_authenticated(),
+            "youtube_authenticated": YouTubePublisher.is_authenticated(),  # default channel
+            "youtube_channels": __import__("agents.youtube_channels", fromlist=["x"]).public_summary()["channels"],
             "hf_token_configured": bool(clip_generator.get_hf_token()),
         },
         headers=NO_CACHE_HEADERS,
@@ -1415,12 +1456,35 @@ async def upload_youtube_client_secrets(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Invalid client_secrets.json: {e}")
 
 
-@app.post("/api/settings/youtube-auth")
-def trigger_youtube_oauth():
-    """Triggers YouTube OAuth 2.0 browser sign-in flow and saves credentials/youtube_tokens.json."""
+@app.get("/api/channels")
+def list_channels():
+    """Registered YouTube channels (no tokens): [{key, id, handle, title, authorized, is_default, studio_url}]."""
+    from agents import youtube_channels as reg
+    return JSONResponse(content=reg.public_summary(), headers=NO_CACHE_HEADERS)
+
+
+class ChannelDefaultRequest(BaseModel):
+    channel: str
+
+
+@app.post("/api/channels/default")
+def set_default_channel(req: ChannelDefaultRequest):
+    from agents import youtube_channels as reg
     try:
-        YouTubePublisher.get_authenticated_service()
-        return {"status": "success", "youtube_oauth_configured": True}
+        reg.set_default(req.channel)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown channel '{req.channel}'")
+    return JSONResponse(content=reg.public_summary(), headers=NO_CACHE_HEADERS)
+
+
+@app.post("/api/settings/youtube-auth")
+def trigger_youtube_oauth(channel: Optional[str] = None):
+    """Opens the Google sign-in for one channel (query ?channel=autoflashx; default = registry default)
+    and saves that channel's own token file."""
+    try:
+        YouTubePublisher.get_authenticated_service(channel=channel)
+        from agents import youtube_channels as reg
+        return {"status": "success", "youtube_oauth_configured": True, "channel": reg.get(channel)["key"]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2251,6 +2315,64 @@ def remove_music_endpoint(project_id: str):
     """Convenience endpoint to remove all background music from a video."""
     return apply_music_endpoint(project_id, ApplyMusicRequest(remove_music=True))
 
+class MusicOnlyClipsRequest(BaseModel):
+    category: Optional[str] = "Sleep Music"
+    mood: Optional[str] = "Relaxing"
+    vocals: Optional[str] = "Instrumental"
+    duration: Optional[float] = 30.0
+    clip_count: Optional[int] = 3
+    prompt: Optional[str] = None
+    track_id: Optional[str] = None
+    clip_start: Optional[float] = 0.0
+    clip_duration: Optional[float] = None
+    clip_loop: Optional[bool] = True
+
+@app.get("/api/music/options")
+def get_music_only_options_endpoint():
+    """Returns the Music-Only relaxation & meditation options (Sleep Music, Flute Meditation, Deep Relaxation, Binaural Beats, Raga Therapy)."""
+    from agents.music_agent import MusicAgent
+    return JSONResponse(content={
+        "options": MusicAgent.MUSIC_ONLY_OPTIONS,
+        "categories": MusicAgent.CATEGORIES
+    }, headers=NO_CACHE_HEADERS)
+
+@app.post("/api/music/create-clips")
+def create_music_only_clips_endpoint(req: MusicOnlyClipsRequest):
+    """Generates Music-Only relaxation track and creates synchronized 9:16 vertical visual video clips + full Short."""
+    from agents.music_agent import MusicAgent
+    agent = MusicAgent()
+    try:
+        res = agent.create_music_only_clips(
+            category=req.category or "Sleep Music",
+            mood=req.mood or "Relaxing",
+            vocals=req.vocals or "Instrumental",
+            duration=req.duration or 30.0,
+            clip_count=req.clip_count or 3,
+            prompt=req.prompt,
+            track_id=req.track_id,
+            clip_start=req.clip_start or 0.0,
+            clip_duration=req.clip_duration,
+            clip_loop=req.clip_loop if req.clip_loop is not None else True,
+        )
+        return JSONResponse(content=res, headers=NO_CACHE_HEADERS)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Music-only clips creation failed: {e}")
+
+@app.get("/api/music/clip-video/{project_id}/{filename}")
+def stream_music_clip_video(project_id: str, filename: str):
+    """Streams an individual generated visual clip MP4 from a Music-Only project."""
+    project = StorageManager.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    p_dir = Path(project.get("project_dir", ""))
+    safe_name = Path(filename).name
+    cand = p_dir / "clips" / safe_name
+    if not cand.exists():
+        cand = p_dir / safe_name
+    if not cand.exists():
+        raise HTTPException(status_code=404, detail="Clip video file not found")
+    return FileResponse(str(cand), media_type="video/mp4", headers=NO_CACHE_HEADERS)
+
 # ==========================================
 # Hindi Speaking Agent & Voiceover API
 # ==========================================
@@ -2288,4 +2410,91 @@ def convert_hindi_endpoint(project_id: str, req: ConvertHindiRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Hindi conversion failed: {e}")
 
+# ---------------------------------------------------------------------------
+# Per-scene motion & image effects (zoom / pan / focus / colour grades / focus blur / fades)
+# ---------------------------------------------------------------------------
+class SceneEffectsRequest(BaseModel):
+    motion: Optional[str] = None
+    motion_strength: Optional[str] = None
+    focus_point: Optional[Dict[str, float]] = None
+    effects: Optional[Dict[str, Any]] = None
+    apply_to_all: Optional[bool] = False
 
+
+class SceneEffectPreviewRequest(SceneEffectsRequest):
+    project_id: str
+    scene: int = 1
+    seconds: Optional[float] = 2.5
+
+
+@app.get("/api/scene-effects/options")
+def scene_effect_options():
+    from agents import scene_effects as sfx
+    return JSONResponse(content=sfx.options(), headers=NO_CACHE_HEADERS)
+
+
+@app.post("/api/projects/{project_id}/scenes/{scene_idx}/effects")
+def save_scene_effects(project_id: str, scene_idx: int, req: SceneEffectsRequest):
+    """Validates and saves motion/effects for one scene (or, with apply_to_all, as the video default).
+    Re-render the project to apply them to the video."""
+    from agents import scene_effects as sfx
+    project = StorageManager.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    scenes = project.get("scenes") or []
+    if not 1 <= scene_idx <= len(scenes):
+        raise HTTPException(status_code=404, detail=f"Scene {scene_idx} not found (project has {len(scenes)} scenes)")
+    try:
+        values = sfx.validate(req.dict(exclude={"apply_to_all"}))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    keys = ("motion", "motion_strength", "focus_point", "effects")
+    if req.apply_to_all:
+        merged = {**(project.get("scene_defaults") or {}), **values}
+        if "effects" in values:
+            merged["effects"] = {**((project.get("scene_defaults") or {}).get("effects") or {}), **values["effects"]}
+        project["scene_defaults"] = merged
+        for sc in scenes:  # the new default applies everywhere
+            for k in keys:
+                sc.pop(k, None)
+    else:
+        sc = scenes[scene_idx - 1]
+        for k, v in values.items():
+            sc[k] = {**(sc.get("effects") or {}), **v} if k == "effects" else v
+    project["scenes"] = scenes
+    StorageManager.save_project(project)
+    return JSONResponse(content={"status": "saved", "applied_to": "all scenes" if req.apply_to_all else f"scene {scene_idx}",
+                                 "resolved": sfx.resolve(scenes[scene_idx - 1], project.get("scene_defaults")),
+                                 "project": project}, headers=NO_CACHE_HEADERS)
+
+
+@app.post("/api/scene-effect-preview")
+def scene_effect_preview(req: SceneEffectPreviewRequest):
+    """Read-only 360x640 MP4 preview of one scene with the given (unsaved) motion & effects."""
+    import tempfile
+    from agents import scene_effects as sfx
+    from app.agents.video_composer import VideoComposer
+    project = StorageManager.get_project_by_id(req.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    scenes = project.get("scenes") or []
+    if not 1 <= req.scene <= len(scenes):
+        raise HTTPException(status_code=404, detail=f"Scene {req.scene} not found")
+    scene = scenes[req.scene - 1]
+    img = scene.get("image_path") or (project.get("image_paths") or [None] * req.scene)[req.scene - 1]
+    if not img or not Path(img).exists():
+        raise HTTPException(status_code=400, detail="This scene has no image to preview")
+    try:
+        overrides = sfx.validate(req.dict(exclude={"apply_to_all", "project_id", "scene", "seconds"}))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    merged_scene = {**scene, **overrides}
+    if "effects" in overrides:
+        merged_scene["effects"] = {**(scene.get("effects") or {}), **overrides["effects"]}
+    settings = sfx.resolve(merged_scene, project.get("scene_defaults"))
+    out = Path(tempfile.mkdtemp(prefix="fxprev_")) / "preview.mp4"
+    try:
+        VideoComposer().render_scene_preview(img, settings, req.seconds or 2.5, out, scene_idx=req.scene - 1)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview render failed: {str(e)[-300:]}")
+    return FileResponse(str(out), media_type="video/mp4", headers=NO_CACHE_HEADERS)

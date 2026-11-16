@@ -23,10 +23,28 @@ SCOPES = [
 
 
 class YouTubePublisher:
+    """Multi-channel publisher. Every method takes an optional `channel` key (registry in
+    agents/youtube_channels.py); None = the registry's default channel. One OAuth token per channel.
+    Channel rule (user, 2026-11-15): uploads are ALWAYS private, on every channel."""
+
+    # Legacy constants (default channel) kept for old callers; new code uses cls.channel_info()
     TARGET_CHANNEL_ID = getattr(config, "YOUTUBE_TARGET_CHANNEL_ID", "UC4KV67NYzLi8JlrfB9J4hGg")
     STUDIO_CHANNEL_URL = f"https://studio.youtube.com/channel/{TARGET_CHANNEL_ID}"
     STUDIO_UPLOAD_URL = f"https://studio.youtube.com/channel/{TARGET_CHANNEL_ID}/videos/upload?d=ud"
     CHANNEL_HANDLE = getattr(config, "YOUTUBE_CHANNEL_HANDLE", "@WeaponXLabs")
+
+    @staticmethod
+    def channel_info(channel: Optional[str] = None) -> Dict[str, Any]:
+        """Resolved channel record: key, id, handle, title, token_path, studio_url, upload_url."""
+        from agents import youtube_channels as reg
+        ch = reg.get(channel)
+        studio = reg.studio_url(ch)
+        return {**ch, "studio_url": studio, "upload_url": f"{studio}/videos/upload?d=ud"}
+
+    @classmethod
+    def channel_of(cls, project: Optional[Dict[str, Any]]) -> Optional[str]:
+        """The channel key a project belongs to (None -> default channel)."""
+        return (project or {}).get("channel") or None
 
     @classmethod
     def auto_discover_client_secrets(cls) -> bool:
@@ -68,9 +86,9 @@ class YouTubePublisher:
         return cls.auto_discover_client_secrets()
 
     @classmethod
-    def is_authenticated(cls) -> bool:
-        """Checks if valid, active YouTube OAuth tokens exist."""
-        tokens_path = config.YOUTUBE_TOKENS_FILE
+    def is_authenticated(cls, channel: Optional[str] = None) -> bool:
+        """Checks if valid, active YouTube OAuth tokens exist for the channel."""
+        tokens_path = cls.channel_info(channel)["token_path"]
         if not tokens_path.exists():
             return False
         try:
@@ -80,10 +98,12 @@ class YouTubePublisher:
             return False
 
     @classmethod
-    def get_authenticated_service(cls):
-        """Obtains authorized YouTube Data API v3 service instance."""
+    def get_authenticated_service(cls, channel: Optional[str] = None, interactive: bool = True):
+        """Authorized YouTube Data API v3 service for the channel (one token file per channel).
+        interactive=False never opens a browser: it raises if the channel isn't authorized."""
         creds = None
-        tokens_path = config.YOUTUBE_TOKENS_FILE
+        ch = cls.channel_info(channel)
+        tokens_path = ch["token_path"]
         secrets_path = config.YOUTUBE_CLIENT_SECRETS_FILE
         cls.auto_discover_client_secrets()
 
@@ -117,12 +137,32 @@ class YouTubePublisher:
                     raise FileNotFoundError(
                         f"YouTube client secrets not found at {secrets_path}. Please place client_secrets.json in credentials/."
                     )
-                print("[YouTubePublisher] Starting OAuth browser sign-in flow on local server...")
+                if not interactive:
+                    raise RuntimeError(
+                        f"YouTube channel '{ch['key']}' ({ch.get('handle')}) is not authorized. "
+                        f"Run: python main.py --auth-youtube --channel {ch['key']}"
+                    )
+                print(f"[YouTubePublisher] Starting OAuth browser sign-in for channel '{ch['key']}' ({ch.get('handle')})...")
+                print("[YouTubePublisher] In the Google window, choose the account AND the channel that matches.")
                 flow = InstalledAppFlow.from_client_secrets_file(str(secrets_path), SCOPES)
                 creds = flow.run_local_server(port=0)
+                # Verify the signed-in channel is the one requested before saving its token
+                probe = build("youtube", "v3", credentials=creds)
+                mine = probe.channels().list(part="id,snippet", mine=True).execute().get("items", [])
+                got_id = mine[0]["id"] if mine else ""
+                got_title = mine[0]["snippet"].get("title", "") if mine else ""
+                if ch.get("id") and got_id and got_id != ch["id"]:
+                    raise RuntimeError(
+                        f"You signed in as '{got_title}' ({got_id}), but channel '{ch['key']}' is {ch.get('handle')} "
+                        f"({ch['id']}). Token NOT saved. Run the command again and pick {ch.get('handle')} in the Google window."
+                    )
+                tokens_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(tokens_path, "w") as token:
                     token.write(creds.to_json())
-                print(f"[YouTubePublisher] ✓ Saved fresh YouTube tokens to {tokens_path}")
+                if got_id:
+                    from agents import youtube_channels as reg
+                    reg.register(ch["key"], id=got_id, title=got_title or ch.get("title", ""))
+                print(f"[YouTubePublisher] ✓ Saved YouTube tokens for '{got_title or ch['key']}' to {tokens_path}")
 
         return build("youtube", "v3", credentials=creds)
 
@@ -136,6 +176,7 @@ class YouTubePublisher:
         made_for_kids: bool = False,
         language: str = "en",
         topic: Optional[str] = None,
+        channel: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Ensures every YouTube Studio field is populated for channel UC4KV67NYzLi8JlrfB9J4hGg (@WeaponXLabs).
@@ -145,7 +186,8 @@ class YouTubePublisher:
             title, description, tags = clean_metadata(title or "", description or "", list(tags or []), topic or title or "")
         except Exception as e:
             print(f"[YouTubePublisher] metadata guard skipped: {e}")
-        clean_title = (title or "WeaponX Labs Breakdown #Shorts").strip()
+        ch = cls.channel_info(channel)
+        clean_title = (title or f"{ch.get('title') or 'Shorts'} #Shorts").strip()
         if "#shorts" not in clean_title.lower():
             if len(clean_title) <= 91:
                 clean_title = f"{clean_title} #Shorts"
@@ -158,8 +200,8 @@ class YouTubePublisher:
         for ht in required_hashtags:
             if ht.lower() not in clean_desc.lower():
                 clean_desc = f"{clean_desc}\n{ht}".strip()
-        if cls.CHANNEL_HANDLE.lower() not in clean_desc.lower():
-            clean_desc += f"\n\nOfficial Channel: {cls.CHANNEL_HANDLE} ({cls.STUDIO_CHANNEL_URL})"
+        if ch.get("handle") and ch["handle"].lower() not in clean_desc.lower():
+            clean_desc += f"\n\nOfficial Channel: {ch['handle']} (https://www.youtube.com/{ch['handle']})"
 
         raw_tags = list(tags or []) + [
             "WeaponXLabs",
@@ -182,9 +224,10 @@ class YouTubePublisher:
             total_tag_chars += len(t_clean) + 1
 
         return {
-            "channel_id": cls.TARGET_CHANNEL_ID,
-            "channel_handle": cls.CHANNEL_HANDLE,
-            "studio_channel_url": cls.STUDIO_CHANNEL_URL,
+            "channel_key": ch["key"],
+            "channel_id": ch["id"],
+            "channel_handle": ch.get("handle"),
+            "studio_channel_url": ch["studio_url"],
             "title": clean_title,
             "description": clean_desc,
             "tags": deduped_tags,
@@ -211,24 +254,30 @@ class YouTubePublisher:
         project_dir: Optional[str] = None,
         category_id: str = "28",
         made_for_kids: bool = False,
+        channel: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Step 1 of the 2-Step Approval Workflow:
-        Uploads the Short to channel UC4KV67NYzLi8JlrfB9J4hGg, fills all YouTube Studio
+        Uploads the Short to the given channel (default: registry default), fills all YouTube Studio
         fields (Title, Description, Tags, Category, Audience=Not Made for Kids, Language,
         Synthetic Media Disclosure), and saves it as 'private' (Draft / Pending Approval)
         so it ONLY goes live after the user clicks 'Approve & Go Live'.
         """
+        ch = cls.channel_info(channel)
         filled = cls.build_complete_fields(
             title=title,
             description=description,
             tags=tags,
             category_id=category_id,
             made_for_kids=made_for_kids,
+            channel=ch["key"],
         )
 
-        # When require_approval_before_live is True, always save as 'private' initially
-        effective_privacy = "private" if require_approval_before_live else (privacy_status or "private")
+        # Channel rule (user, 2026-11-15): the app NEVER makes a video public. Every upload is private;
+        # the owner makes it public or schedules it in YouTube Studio.
+        if privacy_status and privacy_status != "private":
+            print(f"[YouTubePublisher] Requested privacy '{privacy_status}' ignored: uploads are always private.")
+        effective_privacy = "private"
 
         body = {
             "snippet": {
@@ -255,8 +304,9 @@ class YouTubePublisher:
                 draft_file.write_text(
                     json.dumps(
                         {
-                            "target_channel_id": cls.TARGET_CHANNEL_ID,
-                            "studio_channel_url": cls.STUDIO_CHANNEL_URL,
+                            "target_channel_key": ch["key"],
+                            "target_channel_id": ch["id"],
+                            "studio_channel_url": ch["studio_url"],
                             "video_path": str(video_path),
                             "filled_fields": filled,
                             "api_body": body,
@@ -270,21 +320,26 @@ class YouTubePublisher:
             except Exception:
                 pass
 
-        if config.YOUTUBE_TOKENS_FILE.exists() and HAS_GOOGLE_API:
+        if ch["token_path"].exists() and HAS_GOOGLE_API:
             try:
-                youtube = cls.get_authenticated_service()
+                youtube = cls.get_authenticated_service(channel=ch["key"], interactive=False)
 
-                # Check authenticated channel info
-                auth_channel_id = cls.TARGET_CHANNEL_ID
-                auth_channel_title = cls.CHANNEL_HANDLE
+                # The token must belong to the channel we are publishing to: never upload elsewhere
+                auth_channel_id = ch["id"]
+                auth_channel_title = ch.get("handle") or ch.get("title")
                 try:
                     ch_resp = youtube.channels().list(part="id,snippet", mine=True).execute()
                     ch_items = ch_resp.get("items", [])
                     if ch_items:
-                        auth_channel_id = ch_items[0].get("id", cls.TARGET_CHANNEL_ID)
-                        auth_channel_title = ch_items[0].get("snippet", {}).get("title", cls.CHANNEL_HANDLE)
+                        auth_channel_id = ch_items[0].get("id", ch["id"])
+                        auth_channel_title = ch_items[0].get("snippet", {}).get("title", auth_channel_title)
                 except Exception:
                     pass
+                if ch.get("id") and auth_channel_id != ch["id"]:
+                    raise RuntimeError(
+                        f"Token for channel '{ch['key']}' belongs to '{auth_channel_title}' ({auth_channel_id}), "
+                        f"not {ch.get('handle')} ({ch['id']}). Re-authorize: python main.py --auth-youtube --channel {ch['key']}"
+                    )
 
                 media = MediaFileUpload(
                     video_path,
@@ -294,7 +349,7 @@ class YouTubePublisher:
                 )
 
                 print(
-                    f"[YouTubePublisher] Uploading Short '{filled['title']}' to channel {cls.TARGET_CHANNEL_ID} "
+                    f"[YouTubePublisher] Uploading Short '{filled['title']}' to {ch.get('handle')} ({ch['id']}) "
                     f"(saved as '{effective_privacy}' awaiting user approval)..."
                 )
                 request = youtube.videos().insert(
@@ -318,45 +373,49 @@ class YouTubePublisher:
                     "mode": "youtube_api",
                     "video_id": video_id,
                     "url": short_url,
-                    "studio_channel_url": cls.STUDIO_CHANNEL_URL,
+                    "studio_channel_url": ch["studio_url"],
                     "studio_edit_url": studio_edit_url,
-                    "channel_id": cls.TARGET_CHANNEL_ID,
+                    "channel_key": ch["key"],
+                    "channel_id": ch["id"],
                     "authenticated_channel_id": auth_channel_id,
                     "channel_title": auth_channel_title,
                     "privacy": effective_privacy,
-                    "approval_status": "pending_approval" if effective_privacy != "public" else "approved_live",
-                    "live": effective_privacy == "public",
+                    "approval_status": "pending_approval",
+                    "live": False,
                     "filled_fields": filled,
                     "saved_at": datetime.now().isoformat(),
                     "published_at": response.get("snippet", {}).get("publishedAt"),
                 }
             except Exception as api_err:
                 print(f"[YouTubePublisher] OAuth upload error: {api_err}")
-                if config.YOUTUBE_CLIENT_SECRETS_FILE.exists() or config.YOUTUBE_TOKENS_FILE.exists():
+                if config.YOUTUBE_CLIENT_SECRETS_FILE.exists() or ch["token_path"].exists():
                     raise RuntimeError(
                         f"YouTube upload failed: {api_err}. "
-                        "Your OAuth token may have expired or was revoked. Please re-authenticate YouTube channel."
+                        f"Your OAuth token for '{ch['key']}' may have expired or was revoked. "
+                        f"Re-authenticate: python main.py --auth-youtube --channel {ch['key']}"
                     )
 
-        # Staged Draft Mode only when OAuth credentials are not present in credentials/
-        staged_id = f"staged_{cls.TARGET_CHANNEL_ID[-6:]}_{int(datetime.now().timestamp())}"
+        # Staged Draft Mode only when this channel has no OAuth token yet
+        staged_id = f"staged_{(ch['id'] or ch['key'])[-6:]}_{int(datetime.now().timestamp())}"
         return {
             "mode": "studio_staged",
             "video_id": staged_id,
-            "url": f"{cls.STUDIO_CHANNEL_URL}/videos/short",
-            "studio_channel_url": cls.STUDIO_CHANNEL_URL,
-            "studio_upload_url": cls.STUDIO_UPLOAD_URL,
-            "studio_edit_url": f"{cls.STUDIO_CHANNEL_URL}/videos/short",
-            "channel_id": cls.TARGET_CHANNEL_ID,
-            "channel_title": cls.CHANNEL_HANDLE,
+            "url": f"{ch['studio_url']}/videos/short",
+            "studio_channel_url": ch["studio_url"],
+            "studio_upload_url": ch["upload_url"],
+            "studio_edit_url": f"{ch['studio_url']}/videos/short",
+            "channel_key": ch["key"],
+            "channel_id": ch["id"],
+            "channel_title": ch.get("handle") or ch.get("title"),
             "privacy": "private",
             "approval_status": "pending_approval",
             "live": False,
             "filled_fields": filled,
             "saved_at": datetime.now().isoformat(),
             "message": (
-                f"All fields filled & saved as Draft for channel {cls.TARGET_CHANNEL_ID} ({cls.STUDIO_CHANNEL_URL}). "
-                "Click 'Approve & Go Live' to publish live."
+                f"All fields filled & saved as Draft for {ch.get('handle')} ({ch['studio_url']}); channel not yet authorized "
+                f"(python main.py --auth-youtube --channel {ch['key']}). "
+                "Approve it in the studio, then make it public or schedule it in YouTube Studio."
             ),
         }
 
@@ -367,30 +426,32 @@ class YouTubePublisher:
         title: Optional[str] = None,
         description: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        channel: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Step 2 of the 2-Step Approval Workflow:
-        After the user reviews the saved Short and clicks 'Approve & Go Live',
-        switches the video privacyStatus to 'public' so it goes LIVE on
-        https://studio.youtube.com/channel/UC4KV67NYzLi8JlrfB9J4hGg.
+        Approve a Short WITHOUT making it public (channel rule, 2026-11-15): updates its title,
+        description and tags on YouTube and keeps it PRIVATE. The owner makes it public or schedules
+        it in YouTube Studio. (Name kept for existing callers; see approve_keep_private.)
         """
+        # The project's own channel wins; a video must never be approved/edited via another channel's token
+        ch = cls.channel_info(channel or cls.channel_of(project) or (project.get("youtube") or {}).get("channel_key"))
         yt_info = project.get("youtube") or {}
         existing_fields = yt_info.get("filled_fields") or {}
         filled = cls.build_complete_fields(
             title=title or existing_fields.get("title") or project.get("title", "WeaponX Labs #Shorts"),
             description=description or existing_fields.get("description") or project.get("description", "#Shorts"),
             tags=tags or existing_fields.get("tags") or project.get("tags", ["shorts"]),
+            channel=ch["key"],
         )
 
         video_id = yt_info.get("video_id", "")
         video_path = project.get("video_path", "")
 
         last_error = None
-        if config.YOUTUBE_TOKENS_FILE.exists() and HAS_GOOGLE_API:
+        if ch["token_path"].exists() and HAS_GOOGLE_API:
             try:
-                youtube = cls.get_authenticated_service()
+                youtube = cls.get_authenticated_service(channel=ch["key"], interactive=False)
                 if video_id and not str(video_id).startswith("staged_"):
-                    # Update existing private video on YouTube to PUBLIC (LIVE)
                     update_body = {
                         "id": video_id,
                         "snippet": {
@@ -402,48 +463,49 @@ class YouTubePublisher:
                             "defaultAudioLanguage": filled["defaultAudioLanguage"],
                         },
                         "status": {
-                            "privacyStatus": "public",
+                            "privacyStatus": "private",
                             "selfDeclaredMadeForKids": False,
                             "embeddable": True,
                             "publicStatsViewable": True,
                         },
                     }
-                    youtube.videos().update(
-                        part="snippet,status",
-                        body=update_body,
-                    ).execute()
-                    short_url = f"https://youtube.com/shorts/{video_id}"
-                    print(f"[YouTubePublisher] 🚀 Video {video_id} APPROVED & LIVE (PUBLIC): {short_url}")
+                    youtube.videos().update(part="snippet,status", body=update_body).execute()
+                    studio_edit_url = f"https://studio.youtube.com/video/{video_id}/edit"
+                    print(f"[YouTubePublisher] ✅ Video {video_id} approved and kept PRIVATE: {studio_edit_url}")
                     yt_info.update({
                         "mode": "youtube_api",
-                        "privacy": "public",
-                        "approval_status": "approved_live",
-                        "live": True,
-                        "url": short_url,
+                        "privacy": "private",
+                        "approval_status": "approved_private",
+                        "live": False,
+                        "url": f"https://youtube.com/shorts/{video_id}",
+                        "studio_edit_url": studio_edit_url,
                         "filled_fields": filled,
                         "approved_at": datetime.now().isoformat(),
+                        "message": "Approved and saved as Private. Make it public or schedule it in YouTube Studio.",
                     })
                     return yt_info
                 elif video_path and Path(video_path).exists():
-                    # Upload directly as PUBLIC now that user approved
+                    # Not uploaded yet: upload it now, private
                     result = cls.upload_short(
                         video_path=video_path,
                         title=filled["title"],
                         description=filled["description"],
                         tags=filled["tags"],
-                        privacy_status="public",
-                        require_approval_before_live=False,
+                        privacy_status="private",
+                        require_approval_before_live=True,
                         project_dir=project.get("project_dir"),
                     )
                     if result.get("mode") == "youtube_api":
+                        result.update({"approval_status": "approved_private", "approved_at": datetime.now().isoformat(),
+                                       "message": "Approved and saved as Private. Make it public or schedule it in YouTube Studio."})
                         return result
             except Exception as e:
                 last_error = e
-                print(f"[YouTubePublisher] Live approval API error: {e}")
+                print(f"[YouTubePublisher] Approval API error: {e}")
 
         # If user has OAuth configured or an error occurred during live approval, do NOT fake success
         if last_error:
-            raise RuntimeError(f"Could not go LIVE on YouTube: {last_error}")
+            raise RuntimeError(f"Could not update the private video on YouTube: {last_error}")
 
         if cls.is_configured():
             # Credentials present but no active token; trigger re-authentication requirement
@@ -453,15 +515,16 @@ class YouTubePublisher:
 
         # Staged record fallback only if no OAuth credentials exist at all
         yt_info.update({
-            "channel_id": cls.TARGET_CHANNEL_ID,
-            "studio_channel_url": cls.STUDIO_CHANNEL_URL,
-            "studio_upload_url": cls.STUDIO_UPLOAD_URL,
-            "privacy": "public",
-            "approval_status": "approved_live",
+            "channel_key": ch["key"],
+            "channel_id": ch["id"],
+            "studio_channel_url": ch["studio_url"],
+            "studio_upload_url": ch["upload_url"],
+            "privacy": "private",
+            "approval_status": "approved_private",
             "live": False,
             "filled_fields": filled,
             "approved_at": datetime.now().isoformat(),
-            "message": f"Saved draft locally. Upload manually via YouTube Studio: {cls.STUDIO_UPLOAD_URL}",
+            "message": f"Saved draft locally. Upload manually via YouTube Studio: {ch['upload_url']}",
         })
         if project.get("project_dir") and Path(project["project_dir"]).exists():
             draft_file = Path(project["project_dir"]) / "youtube_studio_draft.json"
@@ -470,3 +533,8 @@ class YouTubePublisher:
             except Exception:
                 pass
         return yt_info
+
+
+# Clearer name for the approval step: it never publishes
+YouTubePublisher.approve_keep_private = YouTubePublisher.approve_and_go_live
+

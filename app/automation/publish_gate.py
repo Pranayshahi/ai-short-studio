@@ -88,6 +88,7 @@ def _upload_private(project: Dict[str, Any]) -> Dict[str, Any]:
         privacy_status="private",
         require_approval_before_live=True,
         project_dir=project.get("project_dir"),
+        channel=project.get("channel"),
     )
     project["youtube"] = res
     project["status"] = "pending_approval"
@@ -144,7 +145,8 @@ def handle_decision(action: str, project_id: str) -> str:
         if yt.get("video_id") and not str(yt.get("video_id")).startswith("staged_"):
             approve = getattr(YouTubePublisher, "approve_keep_private", None) or YouTubePublisher.approve_and_go_live
             res = approve(project=project, title=project.get("title"),
-                          description=project.get("description"), tags=project.get("tags"))
+                          description=project.get("description"), tags=project.get("tags"),
+                          channel=project.get("channel"))
         else:
             res = _upload_private(project)
         project["youtube"] = res

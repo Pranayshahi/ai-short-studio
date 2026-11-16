@@ -137,6 +137,9 @@ class QATesterAgent:
         # 16. YouTube metadata never contains the creator's prompt (regression for the leaked-prompt bug)
         results.extend(self._check_youtube_metadata_guard())
 
+        # 17. Per-scene motion & image effects render correctly
+        results.extend(self._check_scene_effects())
+
         total = len(results)
         passed = sum(1 for r in results if r.get("status") == "PASSED")
         failed = sum(1 for r in results if r.get("status") == "FAILED")
@@ -178,6 +181,14 @@ class QATesterAgent:
             for word in ("VERTICAL", "9:16", "Divide", "LEFT COLUMN", "VISUAL STYLE", "**", "typography"):
                 assert word not in d, f"description still contains {word!r}"
             assert all(len(x) <= 30 for x in g), "over-long tag survived"
+            # A plain heading on the first line IS the topic (not a leak); an instruction first line is not
+            heading_req = ("Top 10 Infantry Fighting Vehicles (IFVs) Used by Modern Armies – 2026\n\n"
+                           "1. Puma IFV\nCountry: Germany\nArmament: 30 mm cannon\n2. CV90\nCountry: Sweden")
+            ht = "Top 10 Infantry Fighting Vehicles (IFVs) Used by Modern Armies #Shorts"
+            assert not leaks(ht, "Ranked: the 10 IFVs.\n#Shorts", ["ifv"], heading_req), "first-line topic flagged as a leak"
+            instr_req = "Create a premium-quality infographic in **VERTICAL 9:16**.\n\nDivide it into two columns."
+            assert leaks("Create a premium-quality infographic in VERTICAL #Shorts", "", [], instr_req), \
+                "instruction first line was treated as a topic"
             # A normal script must pass through untouched
             nt, nd, ng = clean_metadata("F-22 Raptor 🇺🇸 #Shorts", "The F-22 first flew in 1997.\n\n#Shorts", ["f22", "usaf"], "F-22 Raptor")
             assert nt == "F-22 Raptor 🇺🇸 #Shorts" and "first flew in 1997" in nd, "clean metadata was altered"
@@ -189,6 +200,53 @@ class QATesterAgent:
             return [{"name": "YouTube Metadata Guard (no prompt leakage)", "category": "Publishing Safety", "status": "FAILED",
                      "duration_ms": int((time.time() - t0) * 1000), "details": str(e),
                      "remediation": "Fix agents/youtube_metadata.py so prompt text can never reach YouTube."}]
+
+    def _check_scene_effects(self) -> List[Dict[str, Any]]:
+        """Every motion and effect renders a valid clip; validation rejects bad input; defaults merge."""
+        t0 = time.time()
+        try:
+            import tempfile
+            import subprocess
+            from PIL import Image
+            from agents import scene_effects as sfx
+            from app.agents.video_composer import VideoComposer
+            tmp = Path(tempfile.mkdtemp(prefix="qa_fx_"))
+            img = tmp / "scene.png"
+            Image.new("RGB", (1080, 1920), (40, 90, 160)).save(img)
+            vc = VideoComposer()
+            combos = [{"motion": m} for m, _ in sfx.MOTIONS] + [
+                {"motion": "static", "effects": {"filter": f}} for f, _ in sfx.FILTERS] + [
+                {"motion": "focus", "focus_point": {"x": 0.2, "y": 0.8}, "effects": {"focus_blur": True, "vignette": True,
+                                                                                    "fade_in": True, "fade_out": True}}]
+            for i, c in enumerate(combos):
+                out = tmp / f"c{i}.mp4"
+                vc.render_scene_preview(str(img), sfx.resolve(c), 1.2, out, scene_idx=i)
+                assert out.exists() and out.stat().st_size > 1000, f"no output for {c}"
+            info = subprocess.run([vc.ffmpeg_exe, "-i", str(tmp / "c0.mp4")], capture_output=True, text=True).stderr
+            assert "360x640" in info, "preview size wrong"
+            for bad in ({"motion": "spin"}, {"motion_strength": "max"}, {"focus_point": {"x": 3, "y": 0}},
+                        {"effects": {"filter": "neon"}}, {"effects": {"sparkle": True}}):
+                try:
+                    sfx.validate(bad)
+                    raise AssertionError(f"accepted invalid {bad}")
+                except ValueError:
+                    pass
+            r = sfx.resolve({"effects": {"vignette": True}}, {"motion": "pan_left", "effects": {"filter": "bw"}})
+            assert r["motion"] == "pan_left" and r["effects"]["filter"] == "bw" and r["effects"]["vignette"], r
+            # Regression: the dashboard once showed "[object Object]" for strengths/toggles. The options
+            # payload must give plain ids there, with human labels in "labels".
+            o = sfx.options()
+            assert all(isinstance(x, str) for x in o["strengths"] + o["toggles"]), "strengths/toggles must be plain ids"
+            assert all(k in o["labels"] for k in o["strengths"] + o["toggles"]), "every id needs a label"
+            assert "[object" not in str(o)
+            return [{"name": "Scene Motion & Effects Engine", "category": "Video Composition", "status": "PASSED",
+                     "duration_ms": int((time.time() - t0) * 1000),
+                     "details": f"{len(combos)} motion/effect combinations rendered; invalid input rejected; defaults merge.",
+                     "remediation": None}]
+        except Exception as e:
+            return [{"name": "Scene Motion & Effects Engine", "category": "Video Composition", "status": "FAILED",
+                     "duration_ms": int((time.time() - t0) * 1000), "details": str(e)[:400],
+                     "remediation": "Check agents/scene_effects.py and VideoComposer._render_scene_clip."}]
 
     def _check_python_syntax(self) -> List[Dict[str, Any]]:
         """Validates that all Python files in the project compile with zero syntax errors."""
@@ -1233,6 +1291,81 @@ class QATesterAgent:
             assert ev._split_label("Main gun 20 mm → 30 mm") == ("MAIN GUN", "20 → 30 mm")
             return f"Evolution prompt parsed; {len(pairs)} verified rows, no repeats/prototypes; AK-47 list never used for non-rifle topics."
 
+        def t_ranked_poster():
+            from agents import ranked_poster as rp
+            text = ("Top 10 IFVs – 2026\n" + "\n".join(
+                f"{i}. Model{i}\nGermany\n- Main armament: 30 mm autocannon (IFV variant)\n- Infantry capacity: Approximately 7 soldiers\n  In service: 20{10 + i}"
+                for i in range(1, 7)))
+            assert rp.is_ranked_list(text) and not rp.is_ranked_list("1. Display 6–8 models\n2. Use thin lines")
+            p = rp.parse_ranked_list(text)
+            assert len(p["items"]) == 6 and p["items"][0]["country"] == "Germany" and p["items"][2]["year"] == "2013", p["items"][:2]
+            assert rp._bullets(p["items"][0]["specs"]) == ["Gun - 30 mm autocannon", "Troops - approx. 7 soldiers"]
+            assert rp._simplify("ZBD-04A")[-1] == "ZBD-04" and "M2 Bradley" in rp._simplify("M2A4 Bradley") and "CV90" in rp._simplify("CV90 Mk IV")
+            from agents.content_analyser import ContentAnalyserAgent
+            out = ContentAnalyserAgent()._build_and_calibrate_scenes(topic=text + "\n- Key feature: Modular platform, amphibious platform",
+                category="", hook="", facts=[], keywords=[], style="weaponx", duration=10.0, language="en", is_weaponx_lab=True)
+            narr = " ".join(sc["narration"] for sc in (out[0]["scenes"] if isinstance(out[0], dict) else out[0]))
+            assert "QBZ" not in narr and "China" not in narr and "Model1" in narr, f"wrong WeaponX intro (substring 'pla' in 'platform'?): {narr}"
+            from agents import evolution_poster as ev
+            desc = ContentAnalyserAgent._ranked_list_description(text)
+            assert desc.splitlines()[0] == "1. Model1 (Germany, 2011) – 30 mm autocannon, approx. 7 soldiers", desc.splitlines()[0]
+            assert "key facts in 10 seconds" not in (desc or "")
+            cr = ev.compact_credits([
+                {"model": "Puma", "author": "Boevaya mashina", "license": "CC BY-SA 4.0", "url": "https://commons.wikimedia.org/wiki/File:" + "x" * 300, "short_url": "https://commons.wikimedia.org/?curid=1"},
+                {"model": "M2 Bradley", "author": "SGT. Cumper", "license": "Public domain", "url": "https://commons.wikimedia.org/wiki/File:y.jpg"}])
+            assert cr == ["• Puma – Boevaya mashina, CC BY-SA 4.0 – https://commons.wikimedia.org/?curid=1"], cr
+            return "Ranked list parsed; intro and description built from the list only; compact credits (short links, no public-domain lines)."
+
+        def t_youtube_never_public():
+            import tempfile
+            from app.agents import youtube_publisher as yp
+            sent = []
+            class Req:
+                def __init__(self, body): self.body = body
+                def next_chunk(self): return None, {"id": "vid123", "snippet": {}}
+                def execute(self): return {}
+            class Videos:
+                def insert(self, part, body, media_body): sent.append(("insert", body["status"]["privacyStatus"])); return Req(body)
+                def update(self, part, body): sent.append(("update", body["status"]["privacyStatus"])); return Req(body)
+            class ChReq:
+                def __init__(self, cid): self.cid = cid
+                def execute(self): return {"items": [{"id": self.cid, "snippet": {"title": "mock"}}]}
+            class Channels:
+                def __init__(self, cid): self.cid = cid
+                def list(self, **k): return ChReq(self.cid)
+            class YT:
+                def __init__(self, cid): self.cid = cid
+                def videos(self): return Videos()
+                def channels(self): return Channels(self.cid)
+            tok = Path(tempfile.mkdtemp()) / "token.json"; tok.write_text("{}")
+            vid = Path(tempfile.mkdtemp()) / "v.mp4"; vid.write_bytes(b"0" * 2000)
+            # Two channels, each with its own token; the rule must hold on BOTH
+            fake = {"weaponxlabs": {"key": "weaponxlabs", "id": "UCwx", "handle": "@weaponxlabs", "title": "WeaponXLabs"},
+                    "autoflashx": {"key": "autoflashx", "id": "UCaf", "handle": "@autoflashx", "title": "AutoFlashX"}}
+            def info(channel=None):
+                ch = dict(fake[channel or "weaponxlabs"]); ch.update(token_path=tok, studio_url="https://studio.youtube.com/channel/" + ch["id"], upload_url="u"); return ch
+            used = []
+            def svc(cls, channel=None, interactive=True):
+                used.append(channel); return YT(fake[channel or "weaponxlabs"]["id"])
+            with mock.patch.object(yp, "HAS_GOOGLE_API", True), \
+                 mock.patch.object(yp, "MediaFileUpload", lambda *a, **k: None, create=True), \
+                 mock.patch.object(yp.YouTubePublisher, "channel_info", staticmethod(info)), \
+                 mock.patch.object(yp.YouTubePublisher, "get_authenticated_service", classmethod(svc)):
+                up = yp.YouTubePublisher.upload_short(str(vid), "T #Shorts", "D", ["t"], privacy_status="public", require_approval_before_live=False)
+                ap = yp.YouTubePublisher.approve_and_go_live({"youtube": {"video_id": "vid123", "filled_fields": {}}, "video_path": str(vid)})
+                up2 = yp.YouTubePublisher.upload_short(str(vid), "Car #Shorts", "D", ["t"], privacy_status="public",
+                                                        require_approval_before_live=False, channel="autoflashx")
+                ap2 = yp.YouTubePublisher.approve_and_go_live({"channel": "autoflashx", "youtube": {"video_id": "vid456", "filled_fields": {}},
+                                                               "video_path": str(vid)})
+            assert sent == [("insert", "private"), ("update", "private")] * 2, f"YouTube received: {sent}"
+            assert up["live"] is False and ap["approval_status"] == "approved_private" and ap["live"] is False
+            assert up2["live"] is False and ap2["approval_status"] == "approved_private" and ap2["live"] is False
+            assert up2["channel_key"] == "autoflashx" and up["channel_key"] == "weaponxlabs", (up.get("channel_key"), up2.get("channel_key"))
+            assert used == ["weaponxlabs", "weaponxlabs", "autoflashx", "autoflashx"], f"token lookups: {used}"
+            return "Both channels: upload with privacy='public' still sends 'private'; Approve keeps 'private'; each uses its own token."
+
+        record("YouTube: the app never makes a video public", t_youtube_never_public, "Check app/agents/youtube_publisher.py")
+        record("WeaponX ranked chart: user's list parsed, variants resolved", t_ranked_poster, "Check agents/ranked_poster.py")
         record("WeaponX evolution poster: verified pairs, never the AK-47 fallback", t_evolution_poster,
                "Check agents/evolution_poster.py, agents/equipment_catalog.py and image_generator._use_verified_evolution_poster")
         return records
