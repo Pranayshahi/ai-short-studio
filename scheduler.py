@@ -156,6 +156,39 @@ def scheduled_car_edit_job():
     return res
 
 
+WORKER_CAPABILITIES = ["daily_short", "daily_car_edit", "studio_generate"]
+
+
+def worker_heartbeat():
+    """Tells the web server this worker is alive and which job kinds it runs (own thread, so it keeps
+    beating while a long video renders)."""
+    try:
+        jobs.write_worker_heartbeat(WORKER_CAPABILITIES)
+    except Exception as e:
+        print(f"[Scheduler] heartbeat error: {e}")
+
+
+def _run_studio_generate(job: Dict[str, Any]) -> Dict[str, Any]:
+    """A video started from the dashboard: the web server prepared the project, this worker renders it
+    (one video at a time for the whole machine)."""
+    from app.agents.pipeline import ShortsPipeline
+    from app.utils.storage import StorageManager
+    params = job.get("params") or {}
+    pid = params["project_id"]
+    project = StorageManager.get_project_by_id(pid)
+    if not project:
+        raise RuntimeError(f"project {pid} no longer exists (deleted while queued?)")
+    if project.get("status") not in ("queued", "in_progress"):
+        return {"project_id": pid, "skipped": f"project is {project.get('status')}"}
+    project.update(status="in_progress", worker_pid=os.getpid(), progress_step="Starting...")
+    StorageManager.save_project(project)
+    jobs.heartbeat(job["id"], note=f"Generating: {project.get('topic')}", project_id=pid)
+    kw = dict(params.get("run_kwargs") or {})
+    ShortsPipeline().run(prepared_project=project, prepared_topic_info=project.get("topic_research") or {}, **kw)
+    final = StorageManager.get_project_by_id(pid) or {}
+    return {"project_id": pid, "topic": final.get("topic"), "status": final.get("status")}
+
+
 def _run_daily_short(job: Dict[str, Any]) -> Dict[str, Any]:
     from app.agents.pipeline import ShortsPipeline
     from app.utils.storage import StorageManager
@@ -214,6 +247,8 @@ def process_queue():
         elif job["kind"] == "daily_car_edit":
             from app.automation import car_queue
             result = car_queue.run_car_edit_job(job)
+        elif job["kind"] == "studio_generate":
+            result = _run_studio_generate(job)
         else:
             raise ValueError(f"Unknown job kind: {job['kind']}")
         jobs.complete(job["id"], result)
@@ -348,7 +383,10 @@ def main():
     scheduler.add_job(scheduled_job, "cron", hour=hour, minute=minute, id="daily_enqueue", misfire_grace_time=6 * 3600, coalesce=True)
     c_hour, c_min = map(int, os.getenv("CAR_EDIT_SCHEDULE_TIME", "20:00").split(":"))
     scheduler.add_job(scheduled_car_edit_job, "cron", hour=c_hour, minute=c_min, id="daily_car_enqueue", misfire_grace_time=6 * 3600, coalesce=True)
-    scheduler.add_job(process_queue, "interval", minutes=1, id="worker", max_instances=1, coalesce=True)
+    # every 10 s: dashboard videos start quickly; still one video at a time (max_instances=1)
+    scheduler.add_job(process_queue, "interval", seconds=10, id="worker", max_instances=1, coalesce=True)
+    scheduler.add_job(worker_heartbeat, "interval", seconds=20, id="worker_heartbeat", max_instances=1,
+                      coalesce=True, next_run_time=datetime.now(tz))
     scheduler.add_job(poll_approvals, "interval", seconds=20, id="approvals", max_instances=1, coalesce=True)
     scheduler.add_job(health.check_all, "interval", minutes=HEALTH_CHECK_MINUTES, id="health", max_instances=1,
                       coalesce=True, next_run_time=datetime.now(tz))

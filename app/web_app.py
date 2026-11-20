@@ -61,7 +61,7 @@ async def guard_project_mutations(request: Request, call_next):
         return await call_next(request)
     project_id = m.group(1)
     project = StorageManager.get_project_by_id(project_id)
-    if project and project.get("status") == "in_progress" and not _is_stale_in_progress(project):
+    if project and project.get("status") in ("in_progress", "queued") and not _is_stale_in_progress(project):
         return JSONResponse(
             status_code=409,
             content={"detail": "This project is still being generated. Wait until it finishes before editing it."},
@@ -130,7 +130,19 @@ def sweep_orphaned_generations(reason: str) -> List[str]:
     worker_pid (older ones) are treated as interrupted.
     """
     marked = []
+    try:
+        from app.automation import jobs as _jobs
+        live_jobs = {j["id"] for j in _jobs.all_jobs() if j["status"] in ("pending", "running")}
+    except Exception:
+        live_jobs = None
     for p in StorageManager.get_all_projects():
+        if p.get("status") == "queued" and live_jobs is not None and p.get("queue_job_id") not in live_jobs:
+            p["status"] = "failed"
+            p["error"] = "Its queued job disappeared before it could run. Generate it again."
+            p["progress_step"] = "Failed: queued job missing"
+            StorageManager.save_project(p)
+            marked.append(p.get("id"))
+            continue
         if p.get("status") != "in_progress":
             continue
         pid = p.get("worker_pid")
@@ -496,7 +508,7 @@ def _running_generation_for(topic: Optional[str], style: Optional[str]) -> Optio
         return None  # "surprise me" (no topic) runs pick their own topic
     style_key = (style or "default").lower()
     for p in StorageManager.get_all_projects():
-        if p.get("status") != "in_progress" or _is_stale_in_progress(p):
+        if p.get("status") not in ("in_progress", "queued") or _is_stale_in_progress(p):
             continue
         if _norm_topic(p.get("topic")) == key and (p.get("style") or "default").lower() in (style_key, "weaponx" if style_key == "weaponx" else style_key):
             return p
@@ -548,6 +560,31 @@ def _start_generation(req, audio_mode, with_voice, with_music, duration, backgro
         project_record["animate_all_scenes"] = True
         project_record["clip_engine"] = getattr(req, "clip_engine", "auto") or "auto"
         StorageManager.save_project(project_record)
+
+    # One job queue for the whole machine: when the scheduler's worker is alive, the video is queued and
+    # rendered there one at a time (dashboard + scheduled videos used to compete for the same 18 GB).
+    # If the worker isn't running (or runs older code), render here as before.
+    from app.automation import jobs as _jobs
+    run_kwargs = dict(auto_publish=req.auto_publish, style=req.style, with_voice=with_voice, with_music=with_music,
+                      duration=duration, audio_mode=audio_mode, language=req.language or "en", voice=req.voice,
+                      music_track=req.music_track, music_volume=req.music_volume)
+    if _jobs.worker_alive("studio_generate"):
+        job = _jobs.enqueue("studio_generate", {"project_id": project_record["id"], "run_kwargs": run_kwargs},
+                            dedupe_key=f"studio-{project_record['id']}", max_attempts=1)
+        pos = _jobs.queue_position(job["id"]) or 1
+        project_record.update(status="queued", queue_job_id=job["id"],
+                              progress_step="Queued: starting now" if pos <= 1 else f"Queued: {pos - 1} video(s) ahead")
+        StorageManager.save_project(project_record)
+        return {
+            "status": "queued",
+            "project_id": project_record["id"],
+            "topic": project_record["topic"],
+            "duration": duration,
+            "audio_mode": audio_mode,
+            "queue_position": pos,
+            "message": f"'{project_record['topic']}' queued" + ("" if pos <= 1 else f" ({pos - 1} video(s) ahead)") +
+                       " - videos render one at a time.",
+        }
 
     def run_job(prepared_project, prepared_topic_info, auto_publish, style, with_voice, with_music, duration, audio_mode, language, voice, music_track, music_volume):
         try:

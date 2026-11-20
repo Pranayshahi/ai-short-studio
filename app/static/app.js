@@ -338,7 +338,7 @@ function renderGrid(projects) {
   }
 
   grid.innerHTML = projects.map(p => {
-    const isInProgress = p.status === 'in_progress';
+    const isInProgress = p.status === 'in_progress' || p.status === 'queued';  // queued = waiting for the video worker
     const isFailed = p.status === 'failed';
     const isPendingApproval = p.status === 'pending_approval' || (p.youtube && p.youtube.approval_status === 'pending_approval');
     // The app never makes videos public: 'published' (old records) and 'uploaded_private' both mean
@@ -571,7 +571,8 @@ function pollGenerationStatus(targetProjectId) {
           msg.textContent = `Autonomous agent producing: ${target.progress_step}`;
         }
 
-        if (target.status === 'completed') {
+        // finished in any way other than failure (completed / needs attention / uploaded / awaiting review)
+        if (target.status !== 'in_progress' && target.status !== 'queued' && target.status !== 'failed') {
           clearInterval(interval);
           banner.classList.add('hidden');
           btn.disabled = false;
@@ -592,8 +593,8 @@ function pollGenerationStatus(targetProjectId) {
         }
       }
 
-      // Safety timeout after ~6 minutes (90 intervals * 4s)
-      if (pollCount > 90) {
+      // Safety timeout after ~30 minutes (a queued video may wait for others to finish first)
+      if (pollCount > 450) {
         clearInterval(interval);
         banner.classList.add('hidden');
         btn.disabled = false;
@@ -4923,7 +4924,7 @@ function openMusicModal(projectId = null) {
   const activeId = projectId || activeProject?.id;
 
   const projectOpts = currentProjects
-    .filter(p => p.status !== 'failed' && p.status !== 'in_progress')
+    .filter(p => p.status !== 'failed' && p.status !== 'in_progress' && p.status !== 'queued')
     .map(p => `<option value="${p.id}" ${p.id === activeId ? 'selected' : ''}>${escapeHtml(p.title || p.topic)}</option>`)
     .join('');
 
@@ -7123,7 +7124,7 @@ async function saveSceneEffects(andRerender) {
     .some(el => el.offsetParent !== null && el.value !== el.defaultValue);
   const idle = () =>
     !document.querySelector('.modal:not(.hidden), [id$="Modal"]:not(.hidden)') &&
-    !(currentProjects || []).some(p => p.status === 'in_progress') &&
+    !(currentProjects || []).some(p => p.status === 'in_progress' || p.status === 'queued') &&
     !document.activeElement?.matches?.('input, textarea, select, [contenteditable]') &&
     !hasUnsavedText() &&
     !(document.getElementById('addSceneForm') && !document.getElementById('addSceneForm').classList.contains('hidden')) &&

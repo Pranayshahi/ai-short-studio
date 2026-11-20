@@ -68,11 +68,20 @@ def run_car_queue_slot_endpoint(slot_id: str, background_tasks: BackgroundTasks)
 
     enq = car_queue.enqueue_slot_job(slot_id=slot_id)
     job = enq["job"]
+    from app.automation import jobs as _jobs
+    if _jobs.worker_alive("daily_car_edit"):
+        # The scheduler's worker runs it (one video at a time for the whole machine)
+        pos = _jobs.queue_position(job["id"]) or 1
+        return JSONResponse(content={
+            "status": "queued", "slot_id": slot_id, "job_id": job["id"], "car_name": slot["car_name"],
+            "mood_label": slot["mood_label"], "queue_position": pos,
+            "message": f"Queued Daily Car Edit for '{slot['car_name']}'" + ("" if pos <= 1 else f" ({pos - 1} ahead)"),
+        }, headers=NO_CACHE_HEADERS)
 
     def _worker():
         try:
-            from app.automation import jobs as _jobs
-            claimed = _jobs.claim_next() or job
+            # run THIS slot's job (claim_next() used to grab the oldest job of any kind)
+            claimed = _jobs.claim(job["id"]) or job
             res = car_queue.run_car_edit_job(claimed)
             _jobs.complete(claimed["id"], res)
         except Exception as e:

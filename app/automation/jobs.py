@@ -33,7 +33,8 @@ def all_jobs() -> List[Dict[str, Any]]:
     return state.read(NAME, [])
 
 
-def enqueue(kind: str = "daily_short", params: Optional[Dict[str, Any]] = None, dedupe_key: Optional[str] = None) -> Dict[str, Any]:
+def enqueue(kind: str = "daily_short", params: Optional[Dict[str, Any]] = None, dedupe_key: Optional[str] = None,
+            max_attempts: Optional[int] = None) -> Dict[str, Any]:
     """Adds a job. With dedupe_key (e.g. 'daily-2026-11-15') a second enqueue is a no-op."""
     job = {
         "id": uuid.uuid4().hex[:10],
@@ -42,7 +43,7 @@ def enqueue(kind: str = "daily_short", params: Optional[Dict[str, Any]] = None, 
         "dedupe_key": dedupe_key,
         "status": "pending",
         "attempts": 0,
-        "max_attempts": MAX_ATTEMPTS,
+        "max_attempts": int(max_attempts or MAX_ATTEMPTS),
         "next_run_at": _iso(_now()),
         "created_at": _iso(_now()),
         "history": [],
@@ -80,6 +81,55 @@ def claim_next() -> Optional[Dict[str, Any]]:
 
     state.update(NAME, [], fn)
     return claimed.get("job")
+
+
+def claim(job_id: str) -> Optional[Dict[str, Any]]:
+    """Marks ONE specific pending job as running (None if it isn't pending any more)."""
+    claimed = {}
+
+    def fn(jobs):
+        for j in jobs:
+            if j["id"] == job_id and j["status"] == "pending":
+                now = _now()
+                j.update(status="running", attempts=j["attempts"] + 1, started_at=_iso(now), heartbeat_at=_iso(now))
+                claimed["job"] = dict(j)
+        return jobs
+
+    state.update(NAME, [], fn)
+    return claimed.get("job")
+
+
+def queue_position(job_id: str) -> Optional[int]:
+    """1 = next to run (a running job counts ahead of it); None if the job isn't waiting."""
+    jobs = all_jobs()
+    waiting = sorted((j for j in jobs if j["status"] == "pending"), key=lambda j: j["next_run_at"])
+    running = sum(1 for j in jobs if j["status"] == "running")
+    ids = [j["id"] for j in waiting]
+    return running + ids.index(job_id) + 1 if job_id in ids else None
+
+
+# ---- worker liveness: the scheduler process writes a heartbeat from its own thread ----------------
+WORKER_HEARTBEAT = "worker_heartbeat"
+WORKER_STALE_SECONDS = 90
+
+
+def write_worker_heartbeat(capabilities: List[str]) -> None:
+    import os
+    state.update(WORKER_HEARTBEAT, {}, lambda _old: {"pid": os.getpid(), "at": _iso(_now()), "capabilities": capabilities})
+
+
+def worker_alive(capability: str) -> bool:
+    """True when the scheduler's worker is running, current, and can run this kind of job."""
+    import os
+    hb = state.read(WORKER_HEARTBEAT, {}) or {}
+    try:
+        fresh = (_now() - datetime.fromisoformat(hb["at"])).total_seconds() < WORKER_STALE_SECONDS
+        os.kill(int(hb["pid"]), 0)
+    except PermissionError:
+        pass  # the process exists (owned by someone else)
+    except (KeyError, ValueError, TypeError, ProcessLookupError):
+        return False
+    return fresh and capability in (hb.get("capabilities") or [])
 
 
 def _modify(job_id: str, mutate) -> Optional[Dict[str, Any]]:
