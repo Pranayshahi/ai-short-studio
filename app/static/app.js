@@ -1933,6 +1933,25 @@ async function approveActiveProjectLive(overrideQa = false) {
   }
 }
 
+// ---- A/B test kit: title + thumbnail variants for YouTube Studio's Test & compare ----------------
+async function loadAbKit() {
+  const box = document.getElementById('abKitBox');
+  if (!box || !activeProject) return;
+  box.innerHTML = '<div style="font-size:12px; color:#94a3b8;">Building variants…</div>';
+  const d = await fetch(`/api/projects/${activeProject.id}/ab-variants?t=${Date.now()}`).then(r => r.json()).catch(() => ({}));
+  const titles = (d.titles || []).map((t, i) => `
+    <div style="display:flex; gap:6px; align-items:center; margin:3px 0; font-size:12px;">
+      <span style="color:#94a3b8;">${String.fromCharCode(65 + i)}</span>
+      <input readonly value="${escapeHtml(t)}" style="flex:1; padding:5px 8px; background:#131a29; border:1px solid #23304a; border-radius:6px; color:#f1f5f9;">
+      <button type="button" class="btn btn-secondary btn-xs" onclick="navigator.clipboard.writeText(this.previousElementSibling.value)">Copy</button>
+    </div>`).join('');
+  const thumbs = (d.thumbnails || []).map((u, i) => `
+    <a href="${u}?t=${Date.now()}" download title="Download thumbnail ${String.fromCharCode(65 + i)}">
+      <img src="${u}?t=${Date.now()}" style="width:90px; border-radius:6px; margin-right:6px;"></a>`).join('');
+  box.innerHTML = `${titles}<div style="margin-top:6px;">${thumbs}</div>
+    <div style="font-size:11px; color:#94a3b8; margin-top:4px;">${escapeHtml(d.how_to || '')}</div>`;
+}
+
 // ---- WeaponX chart preview: build the chart, drop rows, then make the video with it -------------
 let chartPreviewState = null;
 

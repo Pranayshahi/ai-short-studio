@@ -2152,8 +2152,8 @@ class CarQueueRefillRequest(BaseModel):
 # ------------------------------------------------------------------------------------------------
 from app.routes import agents as _routes_agents, car_queue as _routes_car_queue, music as _routes_music, \
     settings as _routes_settings, photo_library as _routes_photo_library, analytics as _routes_analytics, \
-    chart_preview as _routes_chart_preview  # noqa: E402
+    chart_preview as _routes_chart_preview, ab_variants as _routes_ab_variants  # noqa: E402
 
 for _r in (_routes_music, _routes_car_queue, _routes_agents, _routes_settings, _routes_photo_library, _routes_analytics,
-           _routes_chart_preview):
+           _routes_chart_preview, _routes_ab_variants):
     app.include_router(_r.router)
