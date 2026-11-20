@@ -235,8 +235,21 @@ def _run_daily_short(job: Dict[str, Any]) -> Dict[str, Any]:
     return {"project_id": record["id"], "topic": topic, "publish": decision.get("action")}
 
 
+_WORKER_LOCK = __import__("threading").Lock()
+
+
 def process_queue():
-    """Runs at most one due job (the pipeline uses most of the Mac's resources)."""
+    """Runs at most one due job (the pipeline uses most of the Mac's resources). The 10-second tick
+    returns quietly while a video renders (instead of logging 'skipped' every 10 s)."""
+    if not _WORKER_LOCK.acquire(blocking=False):
+        return None
+    try:
+        return _process_one()
+    finally:
+        _WORKER_LOCK.release()
+
+
+def _process_one():
     job = jobs.claim_next()
     if not job:
         return None
@@ -384,7 +397,7 @@ def main():
     c_hour, c_min = map(int, os.getenv("CAR_EDIT_SCHEDULE_TIME", "20:00").split(":"))
     scheduler.add_job(scheduled_car_edit_job, "cron", hour=c_hour, minute=c_min, id="daily_car_enqueue", misfire_grace_time=6 * 3600, coalesce=True)
     # every 10 s: dashboard videos start quickly; still one video at a time (max_instances=1)
-    scheduler.add_job(process_queue, "interval", seconds=10, id="worker", max_instances=1, coalesce=True)
+    scheduler.add_job(process_queue, "interval", seconds=10, id="worker", max_instances=2, coalesce=True)
     scheduler.add_job(worker_heartbeat, "interval", seconds=20, id="worker_heartbeat", max_instances=1,
                       coalesce=True, next_run_time=datetime.now(tz))
     scheduler.add_job(poll_approvals, "interval", seconds=20, id="approvals", max_instances=1, coalesce=True)
