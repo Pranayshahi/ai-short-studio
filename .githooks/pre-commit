@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs before every commit: undefined-name check + the isolated test suite (tests never touch real data).
+# Emergency bypass: SKIP_TESTS=1 git commit ...
+[ "$SKIP_TESTS" = "1" ] && { echo "pre-commit: tests skipped (SKIP_TESTS=1)"; exit 0; }
+cd "$(git rev-parse --show-toplevel)" || exit 1
+PY=.venv/bin/python
+[ -x "$PY" ] || PY=python3
+echo "pre-commit: running tests (about 1 minute)..."
+"$PY" -m pytest -q -x || { echo "pre-commit: tests FAILED - commit stopped. Fix them or use SKIP_TESTS=1."; exit 1; }

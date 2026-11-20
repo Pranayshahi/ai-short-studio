@@ -10,12 +10,14 @@ except ImportError:
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
-OUTPUT_DIR = BASE_DIR / "output"
+# Data folders can be redirected (the test suite points them at a temporary copy, so tests never
+# touch real projects, music, state or credentials)
+OUTPUT_DIR = Path(os.getenv("AI_SHORTS_OUTPUT_DIR") or BASE_DIR / "output")
 PROJECTS_DIR = OUTPUT_DIR / "projects"
 ASSETS_DIR = BASE_DIR / "assets"
-AUDIO_ASSETS_DIR = ASSETS_DIR / "audio"
+AUDIO_ASSETS_DIR = Path(os.getenv("AI_SHORTS_AUDIO_DIR") or ASSETS_DIR / "audio")
 FONTS_DIR = BASE_DIR / "assets" / "fonts"
-CREDENTIALS_DIR = BASE_DIR / "credentials"
+CREDENTIALS_DIR = Path(os.getenv("AI_SHORTS_CREDENTIALS_DIR") or BASE_DIR / "credentials")
 
 for d in [OUTPUT_DIR, PROJECTS_DIR, ASSETS_DIR, AUDIO_ASSETS_DIR, FONTS_DIR, CREDENTIALS_DIR]:
     d.mkdir(parents=True, exist_ok=True)

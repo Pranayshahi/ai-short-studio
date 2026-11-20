@@ -2291,6 +2291,15 @@ class QATesterAgent:
             from agents.music_generator import AIMusicGenerator
             pipe.music_generator = AIMusicGenerator()
             lib = [t for t in pipe.music_generator.list_tracks() if t.get("file_path") and Path(t["file_path"]).exists()]
+            if not lib:
+                # isolated test run (empty library): make a short track of its own instead of needing real data
+                import subprocess as _sp
+                from app.agents.audio_master import _ffmpeg
+                wav = Path(tempfile.mkdtemp()) / "qa_tone.wav"
+                _sp.run([_ffmpeg(), "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=duration=3", str(wav)],
+                        check=True, capture_output=True, timeout=30)
+                pipe.music_generator.save_to_library(str(wav), name="QA tone")
+                lib = [t for t in pipe.music_generator.list_tracks() if t.get("file_path") and Path(t["file_path"]).exists()]
             assert lib, "no music tracks to test with"
             chosen = lib[0]
             assert pipe._lookup_music_track(chosen["id"]) == chosen["file_path"], "track id did not resolve to its file"
@@ -2628,6 +2637,11 @@ class QATesterAgent:
 if __name__ == "__main__":
     qa = QATesterAgent()
     rep = qa.run_full_sanity(deep=True)
-    qa.print_terminal_report(rep)
+    if "--json" in sys.argv:
+        # used by the dashboard's QA Sanity button, which runs the suite in a separate process
+        out = sys.argv[sys.argv.index("--json") + 1]
+        Path(out).write_text(json.dumps(rep, default=str), encoding="utf-8")
+    else:
+        qa.print_terminal_report(rep)
     sys.exit(0 if rep["overall_status"] == "PASSED" else 1)
 

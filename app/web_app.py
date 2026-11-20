@@ -1,6 +1,7 @@
 import os
 import time
 import shutil
+import json
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Response
@@ -386,10 +387,22 @@ def get_project(project_id: str):
 
 @app.post("/api/qa/run-sanity")
 def run_qa_sanity_endpoint():
-    """Runs the QA Tester Agent full sanity suite and returns structured report."""
-    from agents.qa_tester_agent import QATesterAgent
-    tester = QATesterAgent()
-    report = tester.run_full_sanity()
+    """Runs the QA suite in a SEPARATE process (it mocks modules and switches settings while it runs;
+    doing that inside the live server once switched the AI scriptwriter off for later videos)."""
+    import subprocess
+    import sys
+    import tempfile
+    root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "report.json"
+        try:
+            subprocess.run([sys.executable, str(root / "agents" / "qa_tester_agent.py"), "--json", str(out)],
+                           cwd=str(root), capture_output=True, text=True, timeout=900)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(status_code=504, detail="QA suite took longer than 15 minutes")
+        if not out.exists():
+            raise HTTPException(status_code=500, detail="QA suite crashed before producing a report")
+        report = json.loads(out.read_text(encoding="utf-8"))
     return JSONResponse(content=report, headers=NO_CACHE_HEADERS)
 
 @app.get("/api/qa/status")
