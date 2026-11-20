@@ -13,7 +13,7 @@ from app.agents.voice_agent import VoiceAgent
 from app.agents.creator_agent import CreatorAgent
 from app.agents.video_composer import VideoComposer
 from app.agents.qa_validator_agent import QAValidatorAgent
-from app.agents.youtube_publisher import YouTubePublisher
+from app.agents.youtube_publisher import YouTubePublisher, uses_synthetic_media
 
 from agents.topic_agent import TopicAgent
 from agents.content_analyser import ContentAnalyserAgent
@@ -633,6 +633,7 @@ class ShortsPipeline:
                         tags=script_data["tags"],
                         project_dir=str(project_dir),
                         channel=project_record.get("channel"),
+                        synthetic=uses_synthetic_media(project_record),
                     )
                     project_record["youtube"] = upload_res
                     # Uploads are always private (the owner publishes in YouTube Studio): never 'published'

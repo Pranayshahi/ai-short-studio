@@ -14,7 +14,7 @@ import io
 import config
 from app.utils.storage import StorageManager
 from app.agents.pipeline import ShortsPipeline
-from app.agents.youtube_publisher import YouTubePublisher
+from app.agents.youtube_publisher import YouTubePublisher, uses_synthetic_media
 from app.agents import clip_generator
 
 import hmac
@@ -1579,6 +1579,7 @@ def publish_to_youtube(project_id: str, req: PublishRequest):
             project_dir=project.get("project_dir"),
             category_id=req.category_id or "28",
             made_for_kids=req.made_for_kids,
+            synthetic=uses_synthetic_media(project),
         )
         project["youtube"] = res
         # Uploads are always PRIVATE, so never call them "published"

@@ -108,7 +108,7 @@ def _summary(project: Dict[str, Any]) -> str:
 
 
 def _upload_private(project: Dict[str, Any]) -> Dict[str, Any]:
-    from app.agents.youtube_publisher import YouTubePublisher
+    from app.agents.youtube_publisher import YouTubePublisher, uses_synthetic_media
     res = YouTubePublisher.upload_short(
         video_path=project["video_path"],
         title=project.get("title") or project.get("topic"),
@@ -118,6 +118,7 @@ def _upload_private(project: Dict[str, Any]) -> Dict[str, Any]:
         require_approval_before_live=True,
         project_dir=project.get("project_dir"),
         channel=project.get("channel"),
+        synthetic=uses_synthetic_media(project),
     )
     project["youtube"] = res
     project["status"] = "pending_approval"

@@ -22,6 +22,21 @@ SCOPES = [
 ]
 
 
+def uses_synthetic_media(project: Optional[Dict[str, Any]]) -> bool:
+    """YouTube's 'altered or synthetic content' disclosure: required for realistic AI-made or AI-altered
+    footage. True when the video has an AI motion clip (photos animated by LTX/Wan/Phosphene) or an
+    AI-generated image; charts, title cards, text and real photos don't need it. Unknown -> True (safe)."""
+    if not project:
+        return True
+    hook = project.get("hook_clip") or {}
+    if hook and not hook.get("skipped") and hook.get("path"):
+        return True
+    if any(sc.get("clip_path") and not sc.get("title_card") for sc in project.get("scenes") or []):
+        return True
+    recs = project.get("visual_records") or []
+    return any(r.get("source") == "ai_generated" for r in recs)
+
+
 class YouTubePublisher:
     """Multi-channel publisher. Every method takes an optional `channel` key (registry in
     agents/youtube_channels.py); None = the registry's default channel. One OAuth token per channel.
@@ -282,6 +297,7 @@ class YouTubePublisher:
         category_id: str = "28",
         made_for_kids: bool = False,
         channel: Optional[str] = None,
+        synthetic: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Step 1 of the 2-Step Approval Workflow:
@@ -321,6 +337,8 @@ class YouTubePublisher:
                 "embeddable": filled["embeddable"],
                 "publicStatsViewable": filled["publicStatsViewable"],
                 "license": filled["license"],
+                # AI disclosure ("altered or synthetic content") - it was computed but never sent before
+                "containsSyntheticMedia": True if synthetic is None else bool(synthetic),
             },
         }
 
@@ -506,6 +524,8 @@ class YouTubePublisher:
                             "selfDeclaredMadeForKids": False,
                             "embeddable": True,
                             "publicStatsViewable": True,
+                            # an update without it could clear the disclosure set at upload
+                            "containsSyntheticMedia": uses_synthetic_media(project),
                         },
                     }
                     youtube.videos().update(part="snippet,status", body=update_body).execute()
@@ -537,6 +557,7 @@ class YouTubePublisher:
                         require_approval_before_live=True,
                         project_dir=project.get("project_dir"),
                         channel=ch["key"],
+                        synthetic=uses_synthetic_media(project),
                     )
                     if result.get("mode") == "youtube_api":
                         result.update({"approval_status": "approved_private", "approved_at": datetime.now().isoformat(),
