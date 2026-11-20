@@ -237,6 +237,17 @@ class CarEditAgent:
         brand = tokens[0].upper() if tokens else "SUPERCAR"
         model = " ".join(tokens[1:]).upper() if len(tokens) > 1 else clean.upper()
 
+        # Specs database: the car's own Wikipedia article (engine + power), never a sibling model's
+        try:
+            from agents import specs_db
+            found = specs_db.lookup_car(clean)
+        except Exception as e:
+            print(f"[{cls.AGENT_NAME}] specs lookup skipped: {e}")
+            found = None
+        if found and found.get("spec"):
+            return {"brand": brand, "model": model, "spec": found["spec"].upper(), "tag": "",
+                    "spec_source": found.get("source")}
+
         # Extract any HP / engine tokens from facts if available
         spec_parts = []
         joined_facts = " ".join(key_facts or [])
