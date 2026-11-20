@@ -20,3 +20,6 @@ assets/audio/youtube/
 # --- Third-party project with its own git history ---
 # Clone it separately: git clone https://github.com/calesthio/OpenMontage.git openmontage
 openmontage/
+
+# Pre-made theme music pool (generated nightly)
+assets/audio/theme_pool/

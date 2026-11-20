@@ -2,7 +2,7 @@ import os
 import time
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -108,19 +108,59 @@ async def require_studio_token(request: Request, call_next):
     return await call_next(request)
 
 
+def _pid_alive(pid: Any) -> bool:
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+
+
+def sweep_orphaned_generations(reason: str) -> List[str]:
+    """
+    Marks 'in_progress' projects whose generating process is gone as failed, so nothing stays
+    "in progress" forever. A project still owned by a LIVE process (the scheduler running a car edit,
+    or an old server process finishing a render after a restart) is left alone. Records without a
+    worker_pid (older ones) are treated as interrupted.
+    """
+    marked = []
+    for p in StorageManager.get_all_projects():
+        if p.get("status") != "in_progress":
+            continue
+        pid = p.get("worker_pid")
+        if pid is not None and (int(pid) == os.getpid() or _pid_alive(pid)):
+            continue
+        p["status"] = "failed"
+        p["error"] = reason
+        p["progress_step"] = f"Failed: {reason}"
+        StorageManager.save_project(p)
+        marked.append(p.get("id"))
+        print(f"[WebAPI] Marked orphaned generation as failed: {p.get('id')} ({reason})")
+    return marked
+
+
+def _sweep_loop():
+    while True:
+        time.sleep(300)
+        try:
+            sweep_orphaned_generations("Interrupted: the process generating this video stopped.")
+        except Exception as e:
+            print(f"[WebAPI] Orphan sweep skipped: {e}")
+
+
 @app.on_event("startup")
 def mark_interrupted_generations():
     """Background generations don't survive a restart; don't leave them 'in progress' forever."""
     try:
-        for p in StorageManager.get_all_projects():
-            if p.get("status") == "in_progress":
-                p["status"] = "failed"
-                p["error"] = "Interrupted: the server restarted while this video was generating."
-                p["progress_step"] = "Failed: interrupted by server restart"
-                StorageManager.save_project(p)
-                print(f"[WebAPI] Marked interrupted generation as failed: {p.get('id')}")
+        sweep_orphaned_generations("Interrupted: the server restarted while this video was generating.")
     except Exception as e:
         print(f"[WebAPI] Startup recovery skipped: {e}")
+    threading.Thread(target=_sweep_loop, name="orphan-sweep", daemon=True).start()
 
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -161,8 +201,17 @@ class GenerateRequest(BaseModel):
     effects: Optional[Dict[str, Any]] = None
     # YouTube channel key/handle this video is for (weaponxlabs, autoflashx, ...); default = registry default
     channel: Optional[str] = None
+    # Car Edit Mode (Swxft-style) optional parameters
+    car_edit_title: Optional[str] = None
+    car_motion_preset: Optional[str] = "swxft_dynamic"
+    phonk_style: Optional[str] = "drift_phonk"
+    beat_sync_mode: Optional[str] = "swxft_velocity"
+    # 3. Motion clips on every scene (optional toggle: LTX-2.3 / Wan 2.2 on HF, or local Phosphene LTX-2.5)
+    animate_all_scenes: Optional[bool] = False
+    clip_engine: Optional[str] = "auto"
 
 class PublishRequest(BaseModel):
+    override_qa: bool = False  # 'Approve anyway' after seeing the failed quality checks
     privacy_status: Optional[str] = "private"
     title: Optional[str] = None
     description: Optional[str] = None
@@ -170,11 +219,14 @@ class PublishRequest(BaseModel):
     category_id: Optional[str] = "28"
     made_for_kids: bool = False
     require_approval_before_live: bool = True
+    channel: Optional[str] = None
 
 class ApprovePublishRequest(BaseModel):
+    override_qa: bool = False  # 'Approve anyway' after seeing the failed quality checks
     title: Optional[str] = None
     description: Optional[str] = None
     tags: Optional[list] = None
+    channel: Optional[str] = None
 
 class StudioSettingsRequest(BaseModel):
     gemini_api_key: Optional[str] = None
@@ -342,10 +394,13 @@ def run_qa_sanity_endpoint():
 
 @app.get("/api/qa/status")
 def get_qa_status_endpoint():
-    """Returns the latest QA status and sanity metrics."""
-    from agents.qa_tester_agent import QATesterAgent
-    tester = QATesterAgent()
-    report = tester.run_full_sanity()
+    """Returns the LAST QA report (a GET used to re-run the whole ~45 s suite every time).
+    Run a new one with POST /api/qa/run-sanity."""
+    from agents.qa_tester_agent import last_report
+    report = last_report()
+    if report is None:
+        return JSONResponse(content={"overall_status": "NOT_RUN", "message": "No QA run yet. POST /api/qa/run-sanity to run one."},
+                            headers=NO_CACHE_HEADERS)
     return JSONResponse(content=report, headers=NO_CACHE_HEADERS)
 
 @app.get("/api/qa/{project_id}")
@@ -436,6 +491,15 @@ def _running_generation_for(topic: Optional[str], style: Optional[str]) -> Optio
 
 
 def _start_generation(req, audio_mode, with_voice, with_music, duration, background_tasks):
+    # Validate the video-wide motion & effects BEFORE creating the project, so a bad value
+    # returns 400 without leaving an orphaned 'in_progress' record that never runs.
+    from agents import scene_effects as _sfx
+    try:
+        _defaults = _sfx.validate({"motion": req.motion, "motion_strength": req.motion_strength,
+                                   "focus_point": req.focus_point, "effects": req.effects})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     try:
         project_record, topic_info = pipeline.prepare_project(
             custom_topic=req.topic,
@@ -455,15 +519,21 @@ def _start_generation(req, audio_mode, with_voice, with_music, duration, backgro
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to prepare project: {e}")
 
-    # Video-wide default motion & effects chosen at creation time
-    from agents import scene_effects as _sfx
-    try:
-        _defaults = _sfx.validate({"motion": req.motion, "motion_strength": req.motion_strength,
-                                   "focus_point": req.focus_point, "effects": req.effects})
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # Video-wide default motion & effects chosen at creation time (validated above)
     if _defaults:
         project_record["scene_defaults"] = _defaults
+        StorageManager.save_project(project_record)
+
+    if getattr(req, "car_edit_title", None) or (req.style or "").lower() == "car_edit":
+        project_record["car_edit_title"] = getattr(req, "car_edit_title", None)
+        project_record["car_motion_preset"] = getattr(req, "car_motion_preset", "swxft_dynamic") or "swxft_dynamic"
+        project_record["phonk_style"] = getattr(req, "phonk_style", "drift_phonk") or "drift_phonk"
+        project_record["beat_sync_mode"] = getattr(req, "beat_sync_mode", "swxft_velocity") or "swxft_velocity"
+        StorageManager.save_project(project_record)
+
+    if getattr(req, "animate_all_scenes", False):
+        project_record["animate_all_scenes"] = True
+        project_record["clip_engine"] = getattr(req, "clip_engine", "auto") or "auto"
         StorageManager.save_project(project_record)
 
     def run_job(prepared_project, prepared_topic_info, auto_publish, style, with_voice, with_music, duration, audio_mode, language, voice, music_track, music_volume):
@@ -520,7 +590,8 @@ def _start_generation(req, audio_mode, with_voice, with_music, duration, backgro
     }
 
 @app.post("/api/projects/{project_id}/scenes/{scene_idx}/image")
-async def upload_scene_image(project_id: str, scene_idx: int, file: UploadFile = File(...)):
+def upload_scene_image(project_id: str, scene_idx: int, file: UploadFile = File(...)):
+    # Plain def: the decode/resize/CLIP work runs in the threadpool instead of blocking the event loop
     """
     Manually upload/replace an image for a specific scene.
     Automatically formats into full-bleed 1080x1920 9:16 vertical.
@@ -529,12 +600,20 @@ async def upload_scene_image(project_id: str, scene_idx: int, file: UploadFile =
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    content = await file.read()
+    content = file.file.read()
     if not content or len(content) < 1000:
         raise HTTPException(status_code=400, detail="Invalid image file")
 
+    n_scenes = len(project.get("scenes") or [])
+    if n_scenes and not 1 <= scene_idx <= n_scenes:
+        raise HTTPException(status_code=404, detail=f"Scene {scene_idx} not found (project has {n_scenes} scenes)")
+
     try:
         raw_img = Image.open(io.BytesIO(content)).convert("RGB")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Not a readable image file (use PNG, JPG or WEBP)")
+
+    try:
         target_w, target_h = config.VIDEO_WIDTH, config.VIDEO_HEIGHT
 
         # Full-Bleed 9:16 Cover scaling
@@ -595,8 +674,29 @@ async def upload_scene_image(project_id: str, scene_idx: int, file: UploadFile =
         if "scene_layers" in project and isinstance(project["scene_layers"], dict):
             project["scene_layers"].pop(str(scene_idx), None)
 
+        # Your uploads are trusted (never blocked), but warn when the picture doesn't look like the
+        # subject's kind of thing (e.g. an artillery photo in an F-35 video)
+        warning = None
+        try:
+            from agents.image_generator import ImageGeneratorAgent
+            chk = ImageGeneratorAgent()._verify_image_content(img_path, project.get("topic", ""), lenient=False)
+            if chk.get("passed") is False:
+                warning = (f"This picture may not show {project.get('topic')}: it looks more like "
+                           f"'{chk.get('top_decoy') or chk.get('best_label')}'. Kept it as you asked.")
+                if 0 <= idx < len(scenes):
+                    scenes[idx]["upload_warning"] = warning
+            elif 0 <= idx < len(scenes):
+                scenes[idx].pop("upload_warning", None)
+        except Exception as e:
+            print(f"[WebAPI] Upload content check skipped: {e}")
+
         StorageManager.save_project(project)
-        return {"status": "success", "image_url": f"/api/scene_image/{project_id}/{scene_idx}"}
+        out = {"status": "success", "image_url": f"/api/scene_image/{project_id}/{scene_idx}"}
+        if warning:
+            out["warning"] = warning
+        return out
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image processing error: {e}")
 
@@ -1014,6 +1114,25 @@ def add_scene(project_id: str, req: AddSceneRequest):
     scenes.insert(pos - 1, new_scene)
     _resync_scene_numbers(project, scenes_dir)
 
+    # Try a NEW verified photo of the subject (a copy of the neighbour is a guaranteed repeat that
+    # Verify-video flags). Web photos only, so this stays quick; the copy remains if nothing new fits.
+    fresh = None
+    if not project.get("is_weaponx_lab") and project.get("style") not in ("weaponx", "car_edit", "music_only"):
+        try:
+            from agents.image_generator import ImageGeneratorAgent
+            used = {str(r.get("source_url")) for r in (project.get("visual_records") or []) if r.get("source_url")}
+            others = [str(p) for i, p in enumerate(project.get("image_paths") or [], 1) if i != pos and p]
+            fresh = ImageGeneratorAgent().acquire_fresh_web_image(
+                project.get("topic", ""), new_scene, pos, new_img, used_urls=used, existing_images=others)
+        except Exception as e:
+            print(f"[WebAPI] Fresh image for new scene {pos} failed: {e}")
+            fresh = None
+    if fresh:
+        Path(new_img).with_name(f"scene_{pos:02d}_base.png").unlink(missing_ok=True)
+        new_scene.update(visual_source="web_free", visual_source_url=fresh.get("source_url"),
+                         placeholder_from_scene=None, image_path=str(new_img))
+        _sync_visual_record(project, pos, {k: v for k, v in fresh.items() if k != "visual_quality"})
+
     # Grow the target length so the existing scenes aren't squeezed to make room
     if project.get("target_duration"):
         project["target_duration"] = round(float(project["target_duration"]) + est, 2)
@@ -1022,7 +1141,9 @@ def add_scene(project_id: str, req: AddSceneRequest):
     return {
         "status": "success",
         "scene_number": pos,
-        "message": f"Scene {pos} added (~{est:.1f}s). It uses a copy of a neighbouring image; replace it, then Re-render.",
+        "fresh_image": bool(fresh),
+        "message": (f"Scene {pos} added (~{est:.1f}s) with a new verified photo. Re-render to apply." if fresh else
+                    f"Scene {pos} added (~{est:.1f}s). No new photo was found, so it uses a copy of a neighbouring image; replace it, then Re-render."),
         "project": project,
     }
 
@@ -1205,6 +1326,73 @@ def generate_scene_image_endpoint(project_id: str, scene_idx: int, req: SceneIma
         headers=NO_CACHE_HEADERS
     )
 
+class FeedbackRequest(BaseModel):
+    text: str
+
+
+@app.get("/api/projects/{project_id}/feedback")
+def list_feedback(project_id: str):
+    project = StorageManager.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return JSONResponse(content={"feedback": project.get("feedback") or []}, headers=NO_CACHE_HEADERS)
+
+
+@app.post("/api/projects/{project_id}/feedback")
+def add_feedback(project_id: str, req: FeedbackRequest):
+    """Saves a note about what's wrong with this video. 'Auto-fix & re-check' turns open notes into fixes."""
+    project = StorageManager.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Write what's wrong with the video first.")
+    from agents import feedback_fixer
+    item = feedback_fixer.new_item(text)
+    # Show right away what Auto-fix will do with it (rules only: instant, no LLM)
+    item["preview"] = [feedback_fixer.describe(a) for a in feedback_fixer.parse_rules(text, project)]
+    project.setdefault("feedback", []).append(item)
+    StorageManager.save_project(project)
+    return JSONResponse(content={"status": "saved", "item": item, "feedback": project["feedback"]}, headers=NO_CACHE_HEADERS)
+
+
+@app.delete("/api/projects/{project_id}/feedback/{feedback_id}")
+def delete_feedback(project_id: str, feedback_id: str):
+    project = StorageManager.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    before = len(project.get("feedback") or [])
+    project["feedback"] = [f for f in project.get("feedback") or [] if f.get("id") != feedback_id]
+    if len(project["feedback"]) == before:
+        raise HTTPException(status_code=404, detail="Feedback note not found")
+    StorageManager.save_project(project)
+    return JSONResponse(content={"status": "deleted", "feedback": project["feedback"]}, headers=NO_CACHE_HEADERS)
+
+
+@app.post("/api/projects/{project_id}/auto-repair")
+def auto_repair_endpoint(project_id: str):
+    """Re-checks the video and automatically fixes what it can (new images for repeated/wrong scenes,
+    re-render for caption/sync problems, re-master audio, clean metadata), then re-checks again."""
+    project = StorageManager.get_project_by_id(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project["qa_report"] = pipeline.verify_video.run(project_record=project)
+    StorageManager.save_project(project)
+    try:
+        repaired = pipeline.auto_repair(project_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Auto-repair failed: {e}")
+    qa = repaired.get("qa_report") or {}
+    if repaired.get("status") in ("completed", "needs_attention"):
+        repaired["status"] = "completed" if qa.get("qa_passed") else "needs_attention"
+        repaired["problems"] = [] if qa.get("qa_passed") else (qa.get("blocking_failures") or [])
+        StorageManager.save_project(repaired)
+    return JSONResponse(content={"status": "success", "passed": bool(qa.get("qa_passed")),
+                                 "problems": repaired.get("problems") or [], "rounds": repaired.get("auto_repair") or [],
+                                 "feedback": repaired.get("feedback") or [],
+                                 "project": repaired}, headers=NO_CACHE_HEADERS)
+
+
 @app.post("/api/projects/{project_id}/rerender")
 def rerender_project_endpoint(project_id: str, req: RerenderRequest):
     """
@@ -1321,13 +1509,21 @@ def publish_to_youtube(project_id: str, req: PublishRequest):
     if req.tags is not None:
         project["tags"] = req.tags
 
+    _require_fresh_qa(project, req.override_qa)
+
+    is_car_proj = bool(project.get("is_car_edit") or project.get("style") == "car_edit")
+    target_channel = req.channel or ("autoflashx" if is_car_proj else project.get("channel"))
+    if target_channel:
+        from agents import youtube_channels as _reg
+        project["channel"] = _reg.get(target_channel)["key"]
+
     try:
         res = YouTubePublisher.upload_short(
             video_path=video_path,
             title=project.get("title", "WeaponX Labs Breakdown #Shorts"),
             description=project.get("description", "#Shorts #WeaponXLabs"),
             tags=project.get("tags", ["shorts", "weaponx lab"]),
-            privacy_status=req.privacy_status,
+            privacy_status="private",
             require_approval_before_live=req.require_approval_before_live,
             channel=project.get("channel"),
             project_dir=project.get("project_dir"),
@@ -1335,11 +1531,25 @@ def publish_to_youtube(project_id: str, req: PublishRequest):
             made_for_kids=req.made_for_kids,
         )
         project["youtube"] = res
-        project["status"] = "pending_approval" if res.get("approval_status") == "pending_approval" else "published"
+        # Uploads are always PRIVATE, so never call them "published"
+        project["status"] = "pending_approval" if res.get("approval_status") == "pending_approval" else "uploaded_private"
         StorageManager.save_project(project)
         return {"status": "success", "youtube": res, "project": project}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def _require_fresh_qa(project: Dict[str, Any], override: bool) -> None:
+    """Blocks upload/approve (409) when the video fails Verify-video NOW, unless the user overrides."""
+    from app.automation.publish_gate import fresh_qa
+    ok, reasons = fresh_qa(project)
+    if not ok and not override:
+        raise HTTPException(status_code=409, detail={
+            "qa_blocked": True,
+            "message": "This video fails its quality check. Fix the issues and re-render, or approve anyway.",
+            "reasons": reasons[:8],
+            "score": (project.get("qa_report") or {}).get("overall_score"),
+        })
 
 
 @app.post("/api/publish/{project_id}/approve")
@@ -1358,6 +1568,14 @@ def approve_and_publish_live(project_id: str, req: ApprovePublishRequest):
         project["description"] = req.description.strip()
     if req.tags is not None:
         project["tags"] = req.tags
+
+    _require_fresh_qa(project, req.override_qa)
+
+    is_car_proj = bool(project.get("is_car_edit") or project.get("style") == "car_edit")
+    target_channel = req.channel or ("autoflashx" if is_car_proj else project.get("channel"))
+    if target_channel:
+        from agents import youtube_channels as _reg
+        project["channel"] = _reg.get(target_channel)["key"]
 
     try:
         res = YouTubePublisher.approve_and_go_live(
@@ -1513,6 +1731,13 @@ def regenerate_weaponx_poster_for_project(project_id: str):
     project["style"] = "weaponx"
     project["is_weaponx_lab"] = True
     project["target_duration"] = 10.0
+    # Same scene-source fields, poster description and photo credits as a fresh generation
+    from app.agents.pipeline import attach_visual_metadata
+    from agents.youtube_metadata import clean_metadata
+    attach_visual_metadata(c_res, i_res["visual_records"])
+    project["title"], project["description"], project["tags"] = clean_metadata(
+        c_res.get("title") or project.get("title", ""), c_res.get("description", ""),
+        c_res.get("tags") or project.get("tags") or [], topic)
     project["topic_research"] = t_res
     project["content_analysis"] = c_res
     project["image_report"] = i_res
@@ -1723,9 +1948,11 @@ def get_thumbnail(project_id: str):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    image_paths = project.get("image_paths", [])
-    if image_paths and Path(image_paths[0]).exists():
-        return FileResponse(str(image_paths[0]), media_type="image/png")
+    # Sharpest of the opening scene images (scene 1 is often a hazy/atmospheric shot)
+    from app.agents.thumbnail import pick_thumbnail
+    thumb = pick_thumbnail(project)
+    if thumb and Path(thumb).exists():
+        return FileResponse(str(thumb), media_type="image/png", headers=NO_CACHE_HEADERS)
 
     # Fallback to general icon
     return JSONResponse(status_code=404, content={"message": "No thumbnail"})
@@ -2199,6 +2426,10 @@ def apply_music_endpoint(project_id: str, req: ApplyMusicRequest):
 
     mv = float(req.music_volume) if req.music_volume is not None else (float(req.volume) if req.volume is not None else 0.22)
     vv = float(req.voice_volume) if req.voice_volume is not None else 1.0
+    # Music-only projects: remix rebuilds audio from voiceover.mp3, which would bring the removed voice back
+    voice_off = project.get("with_voice") is False or project.get("audio_mode") in ("without_voice", "mute")
+    if voice_off:
+        vv = 0.0
 
     # 1. Option to remove music completely
     if req.remove_music:
@@ -2211,6 +2442,8 @@ def apply_music_endpoint(project_id: str, req: ApplyMusicRequest):
             project["with_music"] = False
             project["audio_mode"] = "without_music"
             project["music_track"] = None
+            project["music_path"] = None
+            project["music_remix"] = None
             project["voice_volume"] = vv
             StorageManager.save_project(project)
             return JSONResponse(content={
@@ -2261,10 +2494,21 @@ def apply_music_endpoint(project_id: str, req: ApplyMusicRequest):
         )
         project["video_path"] = str(remixed_path)
         project["music_track"] = track_id
+        # Re-render reads music_path: without it every re-render fell back to the default track
+        project["music_path"] = str(music_file)
+        # ...and re-applies the same mix (trim/loop/tempo/EQ), which the composer alone can't do
+        project["music_remix"] = {
+            "music_volume": mv, "voice_volume": vv,
+            "ducking": req.ducking if req.ducking is not None else True,
+            "tempo_factor": req.tempo_factor or 1.0, "bass_boost": req.bass_boost or 0.0,
+            "treble_boost": req.treble_boost or 0.0, "reverb": req.reverb or 0.0,
+            "drums_volume": req.drums_volume or 1.0, "melody_volume": req.melody_volume or 1.0,
+            "clip_start": c_start, "clip_duration": c_dur, "clip_loop": c_loop,
+        }
         project["music_volume"] = mv
         project["voice_volume"] = vv
         project["with_music"] = True
-        project["audio_mode"] = "with_voice"
+        project["audio_mode"] = "without_voice" if voice_off else "with_voice"
         project["clip_start"] = c_start
         project["clip_duration"] = c_dur
         project["clip_loop"] = c_loop
@@ -2416,6 +2660,9 @@ def convert_hindi_endpoint(project_id: str, req: ConvertHindiRequest):
 class SceneEffectsRequest(BaseModel):
     motion: Optional[str] = None
     motion_strength: Optional[str] = None
+    speed_ramp: Optional[str] = None
+    beat_sync: Optional[bool] = None
+    bpm: Optional[float] = None
     focus_point: Optional[Dict[str, float]] = None
     effects: Optional[Dict[str, Any]] = None
     apply_to_all: Optional[bool] = False
@@ -2448,7 +2695,7 @@ def save_scene_effects(project_id: str, scene_idx: int, req: SceneEffectsRequest
         values = sfx.validate(req.dict(exclude={"apply_to_all"}))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    keys = ("motion", "motion_strength", "focus_point", "effects")
+    keys = ("motion", "motion_strength", "speed_ramp", "beat_sync", "bpm", "focus_point", "effects")
     if req.apply_to_all:
         merged = {**(project.get("scene_defaults") or {}), **values}
         if "effects" in values:
@@ -2498,3 +2745,100 @@ def scene_effect_preview(req: SceneEffectPreviewRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preview render failed: {str(e)[-300:]}")
     return FileResponse(str(out), media_type="video/mp4", headers=NO_CACHE_HEADERS)
+
+
+# ---------------------------------------------------------------------------
+# Daily Car Edit Automation: 7-Day Queue, Mood Rotation & Telegram Approval
+# ---------------------------------------------------------------------------
+class CarQueueUpdateRequest(BaseModel):
+    car_name: Optional[str] = None
+    mood_id: Optional[str] = None
+    duration: Optional[float] = None
+
+
+class CarQueueRefillRequest(BaseModel):
+    force_reset: Optional[bool] = False
+
+
+@app.get("/api/car-queue")
+def get_car_queue_endpoint():
+    from app.automation import car_queue, notifier
+    slots = car_queue.get_queue(auto_fill=True)
+    return JSONResponse(
+        content={
+            "slots": slots,
+            "moods": car_queue.MOOD_ROTATION,
+            "channel": car_queue.CHANNEL_KEY,
+            "channel_id": car_queue.CHANNEL_ID,
+            "notifications": notifier.is_configured(),
+        },
+        headers=NO_CACHE_HEADERS,
+    )
+
+
+@app.post("/api/car-queue/refill")
+def refill_car_queue_endpoint(req: CarQueueRefillRequest):
+    from app.automation import car_queue
+    slots = car_queue.refill_7_day_queue(force_reset=bool(req.force_reset))
+    return JSONResponse(content={"status": "success", "slots": slots}, headers=NO_CACHE_HEADERS)
+
+
+@app.post("/api/car-queue/{slot_id}/update")
+def update_car_queue_slot_endpoint(slot_id: str, req: CarQueueUpdateRequest):
+    from app.automation import car_queue
+    updated = car_queue.update_slot(slot_id, req.dict(exclude_none=True))
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Queue slot '{slot_id}' not found")
+    return JSONResponse(content={"status": "success", "slot": updated, "slots": car_queue.get_queue(auto_fill=False)}, headers=NO_CACHE_HEADERS)
+
+
+@app.post("/api/car-queue/{slot_id}/run")
+def run_car_queue_slot_endpoint(slot_id: str, background_tasks: BackgroundTasks):
+    """Runs one slot from the 7-day Car Edit queue in the background and dispatches Telegram approval."""
+    from app.automation import car_queue
+    slots = car_queue.get_queue(auto_fill=True)
+    slot = next((s for s in slots if s.get("id") == slot_id), None)
+    if not slot:
+        raise HTTPException(status_code=404, detail=f"Queue slot '{slot_id}' not found")
+
+    enq = car_queue.enqueue_slot_job(slot_id=slot_id)
+    job = enq["job"]
+
+    def _worker():
+        try:
+            from app.automation import jobs as _jobs
+            claimed = _jobs.claim_next() or job
+            res = car_queue.run_car_edit_job(claimed)
+            _jobs.complete(claimed["id"], res)
+        except Exception as e:
+            car_queue.update_slot(slot_id, {"status": "failed", "error": str(e)[:300]})
+            print(f"[CarQueue] Slot {slot_id} failed: {e}")
+
+    background_tasks.add_task(_worker)
+    return JSONResponse(
+        content={
+            "status": "started",
+            "slot_id": slot_id,
+            "job_id": job["id"],
+            "car_name": slot["car_name"],
+            "mood_label": slot["mood_label"],
+            "message": f"Started Daily Car Edit for '{slot['car_name']}' ({slot['mood_label']})",
+        },
+        headers=NO_CACHE_HEADERS,
+    )
+
+
+@app.post("/api/car-queue/poll-telegram")
+def poll_telegram_approvals_endpoint():
+    """Polls Telegram getUpdates for any Approve/Reject button presses and updates project + queue status."""
+    from app.automation import car_queue, notifier, publish_gate
+    handled = notifier.poll_decisions(publish_gate.handle_decision)
+    return JSONResponse(
+        content={
+            "status": "success",
+            "handled_decisions": handled,
+            "slots": car_queue.get_queue(auto_fill=False),
+        },
+        headers=NO_CACHE_HEADERS,
+    )
+

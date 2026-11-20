@@ -12,6 +12,8 @@ except ImportError:
     imageio_ffmpeg = None
 import config
 
+FFMPEG_TIMEOUT_S = int(os.getenv("FFMPEG_TIMEOUT_S", "900"))
+
 class VideoComposer:
     def __init__(self):
         if imageio_ffmpeg:
@@ -33,7 +35,8 @@ class VideoComposer:
         music_path: Optional[str] = None,
         music_volume: Optional[float] = None,
         voice_volume: Optional[float] = None,
-        scene_clip_paths: Optional[List[Optional[str]]] = None
+        scene_clip_paths: Optional[List[Optional[str]]] = None,
+        scene_effects: Optional[List[Optional[Dict[str, Any]]]] = None,
     ) -> str:
         """
         Assembles 1080x1920 vertical short with Ken Burns camera motion,
@@ -91,7 +94,12 @@ class VideoComposer:
                     user_clip = scene_clip_paths[idx] if idx < len(scene_clip_paths) else None
                     if user_clip and Path(user_clip).exists():
                         try:
-                            self._render_video_clip(user_clip, duration, clip_path, idx)
+                            _, clip_overlay_src = self._resolve_clip_sources(img_p)
+                            self._render_video_clip(
+                                user_clip, duration, clip_path, idx,
+                                vf_extra=self._clip_vf_extra(scene_effects, idx, duration),
+                                overlay_path=clip_overlay_src,
+                            )
                             if clip_path.exists() and clip_path.stat().st_size > 1000:
                                 clip_paths.append(clip_path)
                                 continue
@@ -99,7 +107,8 @@ class VideoComposer:
                             print(f"[VideoComposer] ⚠️ User video clip failed for scene {idx+1}: {vid_err}. Falling back to image...")
 
                     try:
-                        self._render_scene_clip(str(img_p), duration, clip_path, idx)
+                        self._render_scene_clip(str(img_p), duration, clip_path, idx,
+                                                settings=self._scene_settings(scene_effects, idx))
                     except Exception as clip_err:
                         print(f"[VideoComposer] ⚠️ Ken Burns motion render failed for scene {idx+1}: {clip_err}. Using static fallback...")
                         self._render_static_clip(str(img_p), duration, clip_path)
@@ -171,8 +180,11 @@ class VideoComposer:
             print("[VideoComposer] Burning styled subtitles and mastering audio...")
             
             # Escape path for FFmpeg filter syntax
-            safe_ass_path = str(Path(ass_path).resolve()).replace("\\", "/").replace(":", "\\:")
-            v_filter = "[0:v]null[v]" if is_single_hero_image else f"[0:v]ass='{safe_ass_path}'[v]"
+            safe_ass_path = str(Path(ass_path).resolve()).replace("\\", "/").replace(":", "\\:") if ass_path else ""
+            has_swxft_overlay = (not with_voice) and any(
+                (Path(p).parent / f"{Path(p).stem}_overlay.png").exists() for p in image_paths if p
+            )
+            v_filter = "[0:v]null[v]" if (is_single_hero_image or has_swxft_overlay or not safe_ass_path) else f"[0:v]ass='{safe_ass_path}'[v]"
             v_vol = float(voice_volume) if voice_volume is not None else 1.15
 
             if not with_voice or not voiceover_path:
@@ -261,6 +273,10 @@ class VideoComposer:
             if temp_final_video.exists():
                 shutil.move(str(temp_final_video), str(final_video_path))
 
+            # Loudness mastering: -14 LUFS integrated, -1 dBTP ceiling (YouTube's playback target)
+            from app.agents.audio_master import master
+            self.last_audio_master = master(str(final_video_path))
+
             print(f"[VideoComposer] Successfully created: {final_video_path}")
             return str(final_video_path)
         finally:
@@ -339,78 +355,101 @@ class VideoComposer:
                 return str(base_p), overlay_p
         return str(img_p), None
 
-    def _render_scene_clip(self, img_path: str, duration: float, output_clip: Path, scene_idx: int):
-        fps = config.VIDEO_FPS
-        total_frames = int(duration * fps)
+    @staticmethod
+    def _scene_settings(scene_effects, idx: int) -> Dict[str, Any]:
+        from agents import scene_effects as sfx
+        given = (scene_effects or [None] * (idx + 1))[idx] if scene_effects and idx < len(scene_effects) else None
+        return given if (given and "effects" in given and "motion" in given) else sfx.resolve(given)
 
+    def _clip_vf_extra(self, scene_effects, idx: int, duration: float) -> str:
+        from agents import scene_effects as sfx
+        return sfx.clip_extra_vf(self._scene_settings(scene_effects, idx), duration)
+
+    def _render_scene_clip(self, img_path: str, duration: float, output_clip: Path, scene_idx: int,
+                           settings: Optional[Dict[str, Any]] = None, size: Optional[tuple] = None):
+        """Renders one image scene with its motion (zoom/pan/focus), colour grade, vignette,
+        focus blur and fades (agents/scene_effects.py). settings=None -> 'auto' (alternating zoom)."""
+        from agents import scene_effects as sfx
+        fps = config.VIDEO_FPS
+        w, h = size or (config.VIDEO_WIDTH, config.VIDEO_HEIGHT)
+        settings = settings or sfx.resolve(None)
         img_p = Path(img_path)
         bg_img, overlay_src = self._resolve_clip_sources(img_p)
-        overlay_p = overlay_src
-        has_overlay = overlay_src is not None
+        inputs = ["-i", str(bg_img)]  # single frame: zoompan expands it to the scene's frame count
+        overlay_idx = mask_idx = None
+        if overlay_src is not None:
+            inputs += ["-loop", "1", "-framerate", str(fps), "-i", str(overlay_src)]
+            overlay_idx = 1
+        if settings["effects"].get("focus_blur"):
+            mask = sfx.focus_mask(Path(output_clip).with_suffix(".mask.png"), w, h, settings["focus_point"], settings["motion"])
+            inputs += ["-loop", "1", "-framerate", str(fps), "-i", str(mask)]
+            mask_idx = 2 if overlay_idx else 1
+        filter_complex = sfx.build_image_filter(settings, duration, fps, w, h, scene_idx, overlay_idx, mask_idx)
+        cmd = [self.ffmpeg_exe, "-y", *inputs,
+               "-filter_complex", filter_complex, "-map", "[v]",
+               "-c:v", "libx264", "-preset", "fast", "-crf", "22", "-pix_fmt", "yuv420p",
+               "-r", str(fps), "-t", f"{duration:.3f}", str(output_clip)]
+        self._run_ffmpeg(cmd, f"Rendering scene {scene_idx+1} ({settings['motion']}, {settings['effects'].get('filter')})")
 
-        # Alternating dynamic motions:
-        # Even: Slow continuous zoom-in to center
-        # Odd: Slow continuous zoom-out from 1.15 to 1.0
-        if scene_idx % 2 == 0:
-            zoom_filter = f"zoompan=z='min(zoom+0.0012,1.20)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT}:fps={fps}"
-        else:
-            zoom_filter = f"zoompan=z='max(1.15-0.0012*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={total_frames}:s={config.VIDEO_WIDTH}x{config.VIDEO_HEIGHT}:fps={fps}"
+    def render_scene_preview(self, img_path: str, settings: Dict[str, Any], seconds: float, output: Path,
+                             scene_idx: int = 0) -> Path:
+        """Short low-res (360x640) preview of one scene's motion & effects (for the dashboard)."""
+        self._render_scene_clip(img_path, max(1.0, min(4.0, float(seconds))), Path(output), scene_idx,
+                                settings=settings, size=(360, 640))
+        return Path(output)
 
-        if has_overlay:
-            # Ken Burns zoom on background image, layer overlay pinned stationary on top
-            filter_complex = f"[0:v]{zoom_filter}[bg];[bg][1:v]overlay=0:0:shortest=1[v]"
-            cmd = [
-                self.ffmpeg_exe, "-y",
-                "-loop", "1", "-framerate", str(fps), "-i", bg_img,
-                "-loop", "1", "-framerate", str(fps), "-i", str(overlay_p),
-                "-filter_complex", filter_complex,
-                "-map", "[v]",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "22",
-                "-pix_fmt", "yuv420p",
-                "-t", f"{duration:.3f}",
-                str(output_clip)
-            ]
-        else:
-            cmd = [
-                self.ffmpeg_exe, "-y",
-                "-loop", "1", "-framerate", str(fps), "-i", bg_img,
-                "-vf", zoom_filter,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "22",
-                "-pix_fmt", "yuv420p",
-                "-t", f"{duration:.3f}",
-                str(output_clip)
-            ]
-        self._run_ffmpeg(cmd, f"Rendering scene {scene_idx+1}")
-
-    def _render_video_clip(self, video_path: str, duration: float, output_clip: Path, scene_idx: int):
+    def _render_video_clip(self, video_path: str, duration: float, output_clip: Path, scene_idx: int,
+                           vf_extra: str = "", overlay_path: Optional[Path] = None):
         """
-        Normalizes a user-supplied video clip to a scene segment: 9:16 cover crop at the project
-        resolution/fps, looped if shorter than the scene, trimmed to the scene duration, audio dropped
-        (voiceover/music are mixed in later).
+        Normalizes a user-supplied or AI-generated (LTX/Phosphene/Wan) video clip to a scene segment:
+        9:16 cover crop at the project resolution/fps, speed-ramped & beat-flashed if configured,
+        stationary Swxft/Layer Studio overlay composited on top if present, looped/trimmed to scene duration.
         """
         fps = config.VIDEO_FPS
         vf = (
             f"scale={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT},setsar=1,fps={fps},format=yuv420p"
         )
-        cmd = [
-            self.ffmpeg_exe, "-y",
-            "-stream_loop", "-1",
-            "-i", video_path,
-            "-vf", vf,
-            "-an",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "22",
-            "-pix_fmt", "yuv420p",
-            "-t", f"{duration:.3f}",
-            str(output_clip)
-        ]
-        self._run_ffmpeg(cmd, f"Rendering user video clip for scene {scene_idx+1}")
+        if vf_extra:  # scene speed ramp / beat flash / colour grade / vignette / fades
+            vf = f"{vf},{vf_extra},fps={fps},format=yuv420p"
+        # Play the clip ONCE; if it is shorter than the scene, hold its last frame instead of looping it
+        # (a 2 s hook clip looped 4-5x when its scene was longer)
+        vf = f"{vf},tpad=stop_mode=clone:stop_duration={duration:.3f}"
+
+        if overlay_path is not None and Path(overlay_path).exists():
+            filter_complex = (
+                f"[0:v]{vf}[bg];"
+                f"[1:v]scale={config.VIDEO_WIDTH}:{config.VIDEO_HEIGHT}[ovl];"
+                f"[bg][ovl]overlay=0:0:shortest=1,format=yuv420p[v]"
+            )
+            cmd = [
+                self.ffmpeg_exe, "-y",
+                "-i", video_path,
+                "-loop", "1", "-framerate", str(fps), "-i", str(overlay_path),
+                "-filter_complex", filter_complex,
+                "-map", "[v]",
+                "-an",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "22",
+                "-pix_fmt", "yuv420p",
+                "-t", f"{duration:.3f}",
+                str(output_clip)
+            ]
+        else:
+            cmd = [
+                self.ffmpeg_exe, "-y",
+                "-i", video_path,
+                "-vf", vf,
+                "-an",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "22",
+                "-pix_fmt", "yuv420p",
+                "-t", f"{duration:.3f}",
+                str(output_clip)
+            ]
+        self._run_ffmpeg(cmd, f"Rendering video clip for scene {scene_idx+1}")
 
     def _render_static_clip(self, img_path: str, duration: float, output_clip: Path):
         fps = config.VIDEO_FPS
@@ -452,7 +491,11 @@ class VideoComposer:
         self._run_ffmpeg(cmd, f"Rendering static fallback clip {output_clip.name}")
 
     def _run_ffmpeg(self, cmd: List[str], task_name: str):
-        res = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            # Safety net: a filter that never ends must not hang the pipeline/queue forever
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=FFMPEG_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"FFmpeg timed out after {FFMPEG_TIMEOUT_S}s during {task_name}")
         if res.returncode != 0:
             err = res.stderr[-800:] if res.stderr else "Unknown FFmpeg error"
             raise RuntimeError(f"FFmpeg failed during {task_name}: {err}")

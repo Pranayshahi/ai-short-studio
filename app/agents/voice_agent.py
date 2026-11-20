@@ -18,6 +18,13 @@ def timedelta_to_ass(td: timedelta) -> str:
     centiseconds = int((total_seconds - int(total_seconds)) * 100)
     return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
+def _pct(rate: str) -> int:
+    try:
+        return int(str(rate).replace("%", "").replace("+", "") or 0)
+    except ValueError:
+        return 0
+
+
 class VoiceAgent:
     @staticmethod
     def generate_voiceover(
@@ -125,6 +132,7 @@ class VoiceAgent:
         print(f"[VoiceAgent] Voice engine: {'Kokoro (' + os.getenv('KOKORO_VOICE', 'am_michael') + ')' if use_kokoro else 'Edge-TTS (' + str(voice) + ')'}")
 
         # Duration fit: if narration overshoots the requested length, re-voice faster (max +30%)
+        rate_used = voice_rate
         requested = script_data.get("target_duration")
         if requested and words:
             speech_end = words[-1]["end"] + 0.5
@@ -138,13 +146,19 @@ class VoiceAgent:
                 new_pct = min(30, base_pct + needed_pct)
                 if new_pct > base_pct:
                     print(f"[VoiceAgent] Narration {speech_end:.1f}s exceeds target {requested:.1f}s; re-voicing at +{new_pct}% rate...")
-                    audio_bytes, submaker, words = await synth(f"+{new_pct}%")
+                    rate_used = f"+{new_pct}%"
+                    audio_bytes, submaker, words = await synth(rate_used)
 
         with open(audio_file, "wb") as f:
             f.write(audio_bytes)
 
-        # Save standard SRT
-        srt_content = submaker.get_srt()
+        # Restore script punctuation on the spoken words and protect the subject's name, so captions
+        # break at sentence ends and never split "F-35 Lightning / II".
+        from app.agents import caption_chunker
+        caption_chunker.prepare(words, full_text, caption_chunker.subject_phrases(script_data))
+
+        # Save standard SRT (phrase-aware cues with punctuation)
+        srt_content = caption_chunker.to_srt(words) if words else submaker.get_srt()
         with open(srt_file, "w", encoding="utf-8") as f:
             f.write(srt_content)
 
@@ -174,6 +188,8 @@ class VoiceAgent:
             "scene_durations": scene_durations,
             "word_count": len(words),
             "voice_engine": "kokoro" if use_kokoro else "edge-tts",
+            # Speed-up applied ON TOP of the engine's normal pace (0 = natural)
+            "rate_pct": max(0, _pct(rate_used) - _pct(voice_rate)),
         }
 
     @staticmethod
@@ -263,7 +279,8 @@ Style: WeaponXBottom,Impact,62,&H0000D7FF,&H0000FFFF,&H00000000,&H80000000,-1,0,
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
         events = []
-        chunk_size = 3
+        from app.agents.caption_chunker import chunk_words, display_text
+        chunks = chunk_words(words, 3)
         # Phase 2 KaraFun-Style Animated Dynamic Captions:
         # Highlights the active spoken word in vibrant cyan (&H00FEF200& / #00f2fe)
         # with an eye-catching 1.15x scale pop (\fscx115\fscy115) while keeping
@@ -272,9 +289,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         INACTIVE_WHITE = r"{\c&H00FFFFFF&\fscx100\fscy100}"
         RESET_TAG = r"{\c&H00FFFFFF&\fscx100\fscy100}"
 
-        for i in range(0, len(words), chunk_size):
-            chunk = words[i:i + chunk_size]
-            next_start = words[i + chunk_size]["start"] if (i + chunk_size) < len(words) else None
+        for ci, chunk in enumerate(chunks):
+            next_start = chunks[ci + 1][0]["start"] if ci + 1 < len(chunks) else None
 
             # Resolve placement style for this chunk
             chunk_mid_s = (chunk[0]["start"] + chunk[-1]["end"]) / 2.0
@@ -305,7 +321,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 # Assemble chunk text with active word highlighted
                 chunk_tokens = []
                 for j, w in enumerate(chunk):
-                    raw_w = w["text"].upper().replace("\r\n", " ").replace("\n", " ").strip()
+                    raw_w = display_text(w).upper().replace("\r\n", " ").replace("\n", " ").strip()
                     if j == k:
                         chunk_tokens.append(f"{ACTIVE_CYAN}{raw_w}{RESET_TAG}")
                     else:

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI Shorts Studio — Defense & Tech YouTube Automation</title>
-  <link rel="stylesheet" href="/static/style.css?v=20">
+  <link rel="stylesheet" href="/static/style.css?v=25">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Anton&family=Bebas+Neue&family=Inter:wght@400;500;600;700&family=Montserrat:wght@400;600;700;800&family=Oswald:wght@500;600;700&family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=Roboto:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&family=Mukta:wght@400;600;700;800&family=Hind:wght@400;600;700&display=swap" rel="stylesheet">
@@ -25,96 +25,387 @@
       </div>
     </header>
 
-    <!-- Controls Bar -->
-    <section class="controls-panel">
-      <div class="panel-left">
-        <div class="input-group">
-          <input type="text" id="customTopicInput" placeholder="Optional: Enter topic (e.g. 6th-Gen NGAD Fighter, Hypersonic Dark Eagle)...">
+    <!-- Main Workspace Tabs: Weapon | Car | Music -->
+    <nav id="mainWorkspaceTabsBar" class="workspace-tabs-bar" aria-label="Studio Channel Mode">
+      <button type="button" id="mainTabBtnWeapon" class="workspace-tab-btn active" onclick="switchMainWorkspaceTab('weapon')">
+        <span class="workspace-tab-icon">🛡️</span>
+        <span>Weapon</span>
+      </button>
+      <button type="button" id="mainTabBtnCar" class="workspace-tab-btn" onclick="switchMainWorkspaceTab('car')">
+        <span class="workspace-tab-icon">🚗</span>
+        <span>Car</span>
+      </button>
+      <button type="button" id="mainTabBtnMusic" class="workspace-tab-btn" onclick="switchMainWorkspaceTab('music')">
+        <span class="workspace-tab-icon">🎵</span>
+        <span>Music</span>
+      </button>
+    </nav>
+
+    <!-- TAB 1: WEAPON (Same look as current, without Music Only button) -->
+    <div id="mainTabWeapon" class="workspace-tab-pane">
+      <!-- Controls Bar -->
+      <section class="controls-panel">
+        <div class="panel-left">
+          <div class="input-group">
+            <input type="text" id="customTopicInput" placeholder="Optional: Enter topic (e.g. 6th-Gen NGAD Fighter, Hypersonic Dark Eagle)...">
+          </div>
+          <button id="btnGenerate" class="btn btn-primary">
+            <span class="btn-icon">⚡</span> Generate Short
+          </button>
+          <button id="btnWeaponX" class="btn btn-weaponx" title="Create hyper-realistic cinematic video like @WeaponXLabs">
+            <span class="btn-icon">🔥</span> WeaponX Labs Style
+          </button>
+          <button id="btnOpenMontage" class="btn btn-openmontage" title="Create video using OpenMontage engine (https://github.com/calesthio/OpenMontage)">
+            <span class="btn-icon">🎬</span> OpenMontage
+          </button>
         </div>
-        <button id="btnGenerate" class="btn btn-primary">
-          <span class="btn-icon">⚡</span> Generate Short
-        </button>
-        <button id="btnWeaponX" class="btn btn-weaponx" title="Create hyper-realistic cinematic video like @WeaponXLabs">
-          <span class="btn-icon">🔥</span> WeaponX Labs Style
-        </button>
-        <button id="btnOpenMontage" class="btn btn-openmontage" title="Create video using OpenMontage engine (https://github.com/calesthio/OpenMontage)">
-          <span class="btn-icon">🎬</span> OpenMontage
-        </button>
-      </div>
-      <div class="panel-right">
-        <!-- Duration Selector: 5s to 3 min -->
-        <div class="duration-toggle" id="durationToggleContainer">
-          <label for="durationSelect" class="audio-toggle-label">⏱️ Duration:</label>
-          <select id="durationSelect" class="select-dropdown audio-dropdown" title="Select video duration (5s to 3 min)">
-            <option value="5">5s (Quick Hook)</option>
-            <option value="10" selected>10s (WeaponX Fast)</option>
-            <option value="15">15s (Shorts Standard)</option>
-            <option value="30">30s (In-Depth)</option>
-            <option value="60">60s (Max Shorts)</option>
-            <option value="90">90s (1.5 min)</option>
-            <option value="120">120s (2 min)</option>
-            <option value="180">180s (3 min)</option>
-          </select>
+        <div class="panel-right">
+          <div class="panel-right-selects">
+            <!-- Duration Selector: 5s to 3 min -->
+            <div class="duration-toggle" id="durationToggleContainer">
+              <label for="durationSelect" class="audio-toggle-label">⏱️ Duration:</label>
+              <select id="durationSelect" class="select-dropdown audio-dropdown" title="Select video duration (5s to 3 min)">
+                <option value="5">5s (Quick Hook)</option>
+                <option value="10" selected>10s (WeaponX Fast)</option>
+                <option value="15">15s (Shorts Standard)</option>
+                <option value="30">30s (In-Depth)</option>
+                <option value="60">60s (Max Shorts)</option>
+                <option value="90">90s (1.5 min)</option>
+                <option value="120">120s (2 min)</option>
+                <option value="180">180s (3 min)</option>
+              </select>
+            </div>
+
+            <!-- Audio Mode Selector -->
+            <div class="audio-toggle" id="audioToggleContainer">
+              <label for="audioModeSelect" class="audio-toggle-label">🎵 Audio:</label>
+              <select id="audioModeSelect" class="select-dropdown audio-dropdown" title="Select audio mode for generation">
+                <option value="with_voice" selected>🔊 Voice + Music</option>
+                <option value="without_voice">🎵 Music Only (WeaponX Default)</option>
+                <option value="without_music">🎙️ Voice Only (No Music)</option>
+                <option value="mute">🔇 Mute (Silent)</option>
+              </select>
+            </div>
+
+            <!-- Language & Voice Selector -->
+            <div class="lang-toggle" id="langToggleContainer">
+              <label for="langVoiceSelect" class="audio-toggle-label">🗣️ Voice:</label>
+              <select id="langVoiceSelect" class="select-dropdown audio-dropdown" title="Select Voiceover Language & Voice Actor">
+                <option value="en:en-US-ChristopherNeural" selected>🇺🇸 English (Christopher)</option>
+                <option value="en:en-US-EricNeural">🇺🇸 English (Eric Fast)</option>
+                <option value="en:en-IN-PrabhatNeural">🇮🇳 Indian English (Prabhat)</option>
+                <option value="hi:hi-IN-MadhurNeural">🇮🇳 Hindi: मधुर (Madhur Male)</option>
+                <option value="hi:hi-IN-SwaraNeural">🇮🇳 Hindi: स्वरा (Swara Female)</option>
+              </select>
+            </div>
+
+            <!-- Music Track Selector -->
+            <div class="music-toggle" id="musicToggleContainer">
+              <label for="musicTrackSelect" class="audio-toggle-label">🎵 Track:</label>
+              <select id="musicTrackSelect" class="select-dropdown audio-dropdown" title="Select Music Soundtrack">
+                <option value="default" selected>✨ Auto Ambience</option>
+                <option value="yt_epic_bravery">📻 YT: Epic Bravery</option>
+                <option value="yt_cyber_warfare">📻 YT: Cyber Warfare</option>
+                <option value="yt_tactical_strike">📻 YT: Tactical Strike</option>
+                <option value="yt_dark_recon">📻 YT: Dark Recon</option>
+                <option value="yt_jet_afterburner">📻 YT: Jet Afterburner</option>
+                <option value="ai_epic_cinematic">⚡ AI: Epic Cinematic</option>
+                <option value="ai_cyber_ambient">⚡ AI: Cyber Dark Synth</option>
+                <option value="ai_tactical_strike">⚡ AI: Tactical Strike</option>
+                <option value="ai_stealth_infiltrator">⚡ AI: Stealth Infiltrator</option>
+                <option value="ai_supersonic_jet">⚡ AI: Supersonic Jet</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="panel-right-actions">
+            <!-- Image Studio, Music Studio & QA Buttons -->
+            <button id="btnOpenStudioDash" class="btn btn-secondary btn-sm" onclick="openStudioModal(1)" title="Open Full-Screen Multi-Layer Image Studio">
+              🎨 Image Studio
+            </button>
+            <button id="btnOpenMusicStudio" class="btn btn-secondary btn-sm" onclick="openMusicModal()" title="Open AI Music Studio & YouTube Audio Library">
+              🎵 Music Studio
+            </button>
+            <button id="btnRunQATests" class="btn btn-secondary btn-sm" onclick="runQASanityTests()" title="Run QA Tester Agent to verify all components and sanity">
+              🛡️ QA Sanity
+            </button>
+
+            <!-- Toggle Dashboard Prompt Editor -->
+            <button id="btnToggleDashPrompt" class="btn btn-secondary btn-sm" title="View & Edit Prompt Generator Template">
+              📝 Prompt Spec
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- TAB 2: CAR (2 Sub-Tabs: Static Image | Motion Videos) -->
+    <div id="mainTabCar" class="workspace-tab-pane hidden">
+      <section class="controls-panel workspace-card-panel">
+        <!-- Car Sub-Tabs Bar + Target YouTube Channel (UCuJ9LcSqliLH0VEJ9lWZsrQ) -->
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 6px;">
+          <div id="carSubTabsBar" class="sub-tabs-bar" role="tablist" aria-label="Car Generation Mode" style="margin-bottom: 0;">
+            <button type="button" id="carSubTabBtnStatic" class="sub-tab-btn active" onclick="switchCarSubTab('static')">
+              <span>🖼️</span>
+              <span>Static Image</span>
+            </button>
+            <button type="button" id="carSubTabBtnMotion" class="sub-tab-btn" onclick="switchCarSubTab('motion')">
+              <span>🎬</span>
+              <span>Motion Videos</span>
+            </button>
+            <button type="button" id="carSubTabBtnQueue" class="sub-tab-btn" onclick="switchCarSubTab('queue')">
+              <span>📅</span>
+              <span>7-Day Queue &amp; Daily Auto</span>
+            </button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <a id="carTabYtChannelBadge" href="https://studio.youtube.com/channel/UCuJ9LcSqliLH0VEJ9lWZsrQ/videos/short" target="_blank" style="font-size: 12px; color: #38bdf8; text-decoration: none; font-weight: 700; background: rgba(14, 165, 233, 0.12); border: 1px solid rgba(56, 189, 248, 0.35); padding: 5px 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 6px;">
+              <span>📺</span>
+              <span>AutoFlashX Studio Content (UCuJ9LcSqliLH0VEJ9lWZsrQ · Private) ↗</span>
+            </a>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="handleTriggerYoutubeOAuth('autoflashx')" title="Authorize @AutoFlashX (UCuJ9LcSqliLH0VEJ9lWZsrQ) with Google OAuth" style="padding: 5px 10px; font-size: 11.5px; border-color: rgba(16, 185, 129, 0.45); color: #34d399;">
+              🔑 Connect @AutoFlashX OAuth
+            </button>
+          </div>
         </div>
 
-        <!-- Audio Mode Selector -->
-        <div class="audio-toggle" id="audioToggleContainer">
-          <label for="audioModeSelect" class="audio-toggle-label">🎵 Audio:</label>
-          <select id="audioModeSelect" class="select-dropdown audio-dropdown" title="Select audio mode for generation">
-            <option value="with_voice" selected>🔊 Voice + Music</option>
-            <option value="without_voice">🎵 Music Only (WeaponX Default)</option>
-            <option value="without_music">🎙️ Voice Only (No Music)</option>
-            <option value="mute">🔇 Mute (Silent)</option>
-          </select>
+        <!-- Car Sub-Tab 1: Static Image + 4. Comparison Format ("A vs B vs C" Posters) -->
+        <div id="carSubTabStatic" class="car-subtab-pane">
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid rgba(35, 48, 74, 0.7);">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="badge" style="background: linear-gradient(135deg, #f59e0b, #ea580c); color: #fff; font-size: 11.5px; font-weight: 800; padding: 4px 10px;">4. Comparison Format ("A vs B vs C")</span>
+              <span style="font-size: 12.5px; color: #e2e8f0; font-weight: 600;">Single car or "A vs B vs C" head-to-head poster with real photos, flags &amp; ★ BEST spec winners</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+              <span style="font-size: 11.5px; color: #94a3b8;">Quick Compare:</span>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarStaticExample('Porsche 911 GT3 RS vs Ferrari SF90 vs Lamborghini Revuelto')" style="padding: 3px 8px; font-size: 11px;">GT3 RS vs SF90 vs Revuelto</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarStaticExample('Bugatti Tourbillon vs Koenigsegg Jesko vs Rimac Nevera')" style="padding: 3px 8px; font-size: 11px;">Tourbillon vs Jesko vs Nevera</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarStaticExample('Nissan GT-R R34 vs Toyota Supra MK4 vs Mazda RX-7')" style="padding: 3px 8px; font-size: 11px;">GT-R R34 vs Supra MK4 vs RX-7</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarStaticExample('BMW M4 vs Mercedes-AMG GT vs Audi R8')" style="padding: 3px 8px; font-size: 11px;">M4 vs AMG GT vs R8</button>
+            </div>
+          </div>
+
+          <!-- Row 1: Full-width Car Name / A vs B vs C Input + Action Buttons -->
+          <div class="car-static-controls-row" style="margin-bottom: 10px;">
+            <div class="input-group car-name-input-group">
+              <input type="text" id="carStaticNameInput" placeholder="Enter Car Name or 'A vs B vs C' (e.g. Porsche 911 GT3 RS vs Ferrari SF90 vs Lamborghini Revuelto)...">
+            </div>
+            <button type="button" id="btnCarStaticGenerate" class="btn btn-primary" onclick="triggerCarStaticGenerate(false)">
+              <span class="btn-icon">⚡</span> Generate Short
+            </button>
+            <button type="button" id="btnCarComparisonGenerate" class="btn btn-weaponx" onclick="triggerCarStaticGenerate(true)" title="Generate 'A vs B vs C' Comparison Poster with real photos, flags &amp; spec winners">
+              <span class="btn-icon">⚔️</span> A vs B vs C Poster
+            </button>
+          </div>
+
+          <!-- Row 2: Spacious 3-Column Selectors Grid -->
+          <div class="car-selects-grid-3">
+            <!-- 1. Duration Selector -->
+            <div class="duration-toggle" id="carStaticDurationContainer">
+              <label for="carStaticDurationSelect" class="audio-toggle-label">⏱️ Duration:</label>
+              <select id="carStaticDurationSelect" class="select-dropdown audio-dropdown" title="Select car video duration">
+                <option value="20" selected>20s (Standard)</option>
+                <option value="30">30s (In-Depth)</option>
+                <option value="60">60s (Max Shorts)</option>
+                <option value="90">90s (1.5 min)</option>
+                <option value="120">120s (2 min)</option>
+                <option value="180">180s (3 min)</option>
+              </select>
+            </div>
+
+            <!-- 2. Audio Mode Selector -->
+            <div class="audio-toggle" id="carStaticAudioContainer">
+              <label for="carStaticAudioSelect" class="audio-toggle-label">🎵 Audio:</label>
+              <select id="carStaticAudioSelect" class="select-dropdown audio-dropdown" title="Select audio mode">
+                <option value="with_voice" selected>🔊 Voice + Music</option>
+                <option value="without_voice">🎵 Music Only</option>
+                <option value="without_music">🎙️ Voice Only (No Music)</option>
+                <option value="mute">🔇 Mute (Silent)</option>
+              </select>
+            </div>
+
+            <!-- 3. Voice Selector -->
+            <div class="lang-toggle" id="carStaticVoiceContainer">
+              <label for="carStaticVoiceSelect" class="audio-toggle-label">🗣️ Voice:</label>
+              <select id="carStaticVoiceSelect" class="select-dropdown audio-dropdown" title="Select Voiceover Language &amp; Voice Actor">
+                <option value="en:en-US-ChristopherNeural" selected>🇺🇸 English (Christopher)</option>
+                <option value="en:en-US-EricNeural">🇺🇸 English (Eric Fast)</option>
+                <option value="en:en-IN-PrabhatNeural">🇮🇳 Indian English (Prabhat)</option>
+                <option value="hi:hi-IN-MadhurNeural">🇮🇳 Hindi: मधुर (Madhur Male)</option>
+                <option value="hi:hi-IN-SwaraNeural">🇮🇳 Hindi: स्वरा (Swara Female)</option>
+              </select>
+            </div>
+          </div>
         </div>
 
-        <!-- Language & Voice Selector -->
-        <div class="lang-toggle" id="langToggleContainer">
-          <label for="langVoiceSelect" class="audio-toggle-label">🗣️ Voice:</label>
-          <select id="langVoiceSelect" class="select-dropdown audio-dropdown" title="Select Voiceover Language & Voice Actor">
-            <option value="en:en-US-ChristopherNeural" selected>🇺🇸 English (Christopher)</option>
-            <option value="en:en-US-EricNeural">🇺🇸 English (Eric Fast)</option>
-            <option value="en:en-IN-PrabhatNeural">🇮🇳 Indian English (Prabhat)</option>
-            <option value="hi:hi-IN-MadhurNeural">🇮🇳 Hindi: मधुर (Madhur Male)</option>
-            <option value="hi:hi-IN-SwaraNeural">🇮🇳 Hindi: स्वरा (Swara Female)</option>
-          </select>
+        <!-- Car Sub-Tab 2: Motion Videos (1. Car Edit Mode + 2. Beat Sync & Speed Ramps — Swxft Style) -->
+        <div id="carSubTabMotion" class="car-subtab-pane hidden">
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid rgba(35, 48, 74, 0.7);">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="badge" style="background: linear-gradient(135deg, #ff3b00, #ff8c00); color: #fff; font-size: 11.5px; font-weight: 800; padding: 4px 10px;">1. Car Edit Mode</span>
+              <span class="badge" style="background: linear-gradient(135deg, #0ea5e9, #6366f1); color: #fff; font-size: 11.5px; font-weight: 800; padding: 4px 10px;">2. Beat Sync + Speed Ramps</span>
+              <span class="badge" style="background: linear-gradient(135deg, #10b981, #059669); color: #fff; font-size: 11.5px; font-weight: 800; padding: 4px 10px;">3. Motion Clips on Every Scene</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+              <span style="font-size: 11.5px; color: #94a3b8;">Quick Pick:</span>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarMotionExample('Porsche 911 GT3 RS')" style="padding: 3px 8px; font-size: 11px;">Porsche 911 GT3 RS</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarMotionExample('Bugatti Tourbillon')" style="padding: 3px 8px; font-size: 11px;">Bugatti Tourbillon</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarMotionExample('Nissan Skyline GT-R R34')" style="padding: 3px 8px; font-size: 11px;">GT-R R34</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarMotionExample('Toyota Supra MK4')" style="padding: 3px 8px; font-size: 11px;">Supra MK4</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarMotionExample('Ferrari F80')" style="padding: 3px 8px; font-size: 11px;">Ferrari F80</button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="fillCarMotionExample('Lamborghini Revuelto')" style="padding: 3px 8px; font-size: 11px;">Revuelto</button>
+            </div>
+          </div>
+
+          <!-- Row 1: Car Name + Optional Swxft Title + Generate Car Edit + New Music Button -->
+          <div class="car-static-controls-row" style="margin-bottom: 10px;">
+            <div class="input-group car-name-input-group" style="flex: 2 1 280px;">
+              <input type="text" id="carMotionNameInput" placeholder="Enter Car Name (e.g. Porsche 911 GT3 RS, Bugatti Tourbillon, Nissan GT-R R34)...">
+            </div>
+            <div class="input-group" style="flex: 1.2 1 220px; min-width: 200px;">
+              <input type="text" id="carMotionTitleInput" placeholder="Optional Swxft Title (auto: Brand + Model + HP Specs)...">
+            </div>
+            <button type="button" id="btnCarMotionGenerate" class="btn btn-weaponx" onclick="triggerCarMotionGenerate()" title="Generate Swxft-style Car Edit with beat-synced cuts, velocity speed ramps, real photos &amp; ACE-Step Phonk track">
+              <span class="btn-icon">🔥</span> Generate Car Edit
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="openMusicModal()" title="Create &amp; add new AI music track to Phonk Track selector" style="padding: 12px 16px; border-color: rgba(56, 189, 248, 0.45); color: #38bdf8; white-space: nowrap;">
+              <span class="btn-icon">🎵</span> + New Music
+            </button>
+          </div>
+
+          <!-- Row 2: Clean 4-Column Grid (Time | Beat & Ramp | Motion | Phonk Track) -->
+          <div class="car-selects-grid-4">
+            <div class="duration-toggle" id="carMotionDurationContainer">
+              <label for="carMotionDurationSelect" class="audio-toggle-label">⏱️ Time:</label>
+              <select id="carMotionDurationSelect" class="select-dropdown audio-dropdown" title="Select Car Edit video time">
+                <option value="20" selected>20s (Standard Edit)</option>
+                <option value="30">30s (Full Montage)</option>
+                <option value="60">60s (Max Shorts)</option>
+              </select>
+            </div>
+
+            <div class="audio-toggle" id="carMotionBeatSyncContainer">
+              <label for="carMotionBeatSyncSelect" class="audio-toggle-label">⚡ Beat &amp; Ramp:</label>
+              <select id="carMotionBeatSyncSelect" class="select-dropdown audio-dropdown" title="Cuts and velocity speed ramps locked to the Phonk beat">
+                <option value="swxft_velocity" selected>🔥 Swxft Beat Drop + Ramps (2B/4B)</option>
+                <option value="every_2_beats">⚡ Rapid 2-Beat Cuts + Whip Ramps</option>
+                <option value="every_4_beats">🎬 4-Beat Bar Cuts + Slow-Mo Ramps</option>
+                <option value="whip_in">🚀 Whip-In Entry → Slow-Mo Hold</option>
+              </select>
+            </div>
+
+            <div class="audio-toggle" id="carMotionPresetContainer">
+              <label for="carMotionPresetSelect" class="audio-toggle-label">🎥 Motion:</label>
+              <select id="carMotionPresetSelect" class="select-dropdown audio-dropdown" title="Select Zoom/Pan motion preset">
+                <option value="swxft_dynamic" selected>🔥 Zoom + Pan Beat Cuts (Strong)</option>
+                <option value="zoom_punch">⚡ Zoom Punch In / Out</option>
+                <option value="cinematic_pan">🎬 Smooth Pan + Focus Push</option>
+              </select>
+            </div>
+
+            <div class="music-toggle" id="carMotionPhonkContainer">
+              <label for="carMotionPhonkSelect" class="audio-toggle-label">🎵 Phonk Track:</label>
+              <select id="carMotionPhonkSelect" class="select-dropdown audio-dropdown" title="Select Built-in Phonk Style, Newly Generated AI Music, or Saved Library Track">
+                <optgroup label="🔥 Built-in &amp; ACE-Step Phonk Styles">
+                  <option value="drift_phonk" selected>🔥 ACE-Step Drift Phonk (130 BPM)</option>
+                  <option value="brazilian_phonk">⚡ Hard Brazilian Phonk (135 BPM)</option>
+                  <option value="night_drive">🌙 Night Drive Wave Phonk (124 BPM)</option>
+                  <option value="tokyo_touge">🎌 Tokyo Touge Drift Phonk (132 BPM)</option>
+                  <option value="aggressive_cowbell">🔔 Aggressive 808 Cowbell Phonk (138 BPM)</option>
+                  <option value="cyber_supercar">🚀 Cyber Supercar Synth Phonk (128 BPM)</option>
+                  <option value="dark_memphis">💀 Dark Memphis Underground Phonk (126 BPM)</option>
+                  <option value="hypercar_orchestral">👑 Hypercar Orchestral Phonk (130 BPM)</option>
+                </optgroup>
+              </select>
+            </div>
+          </div>
+
+          <!-- Row 3: Compact Single-Line Bottom Bar (3. Motion Clips Toggle + Engine + Audio Mode) -->
+          <div id="carMotionAllScenesBar" class="car-motion-bottom-bar">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 1 1 520px;">
+              <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; font-weight: 700; color: #f8fafc; white-space: nowrap;">
+                <input type="checkbox" id="chkCarAnimateAllScenes" onchange="toggleCarAnimateAllScenesUI()" style="width: 16px; height: 16px; accent-color: #10b981; cursor: pointer;">
+                <span>🎞️ 3. Motion Clips on Every Scene</span>
+                <span class="badge" style="background: rgba(16, 185, 129, 0.16); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; font-size: 10px; padding: 2px 7px;">Optional Toggle</span>
+              </label>
+
+              <div id="carAnimateEngineWrap" style="display: inline-flex; align-items: center; gap: 6px; opacity: 0.65; flex: 1 1 260px; max-width: 390px;">
+                <label for="carAnimateEngineSelect" class="audio-toggle-label" style="font-size: 12px;">Engine:</label>
+                <select id="carAnimateEngineSelect" class="select-dropdown audio-dropdown" title="Each shot animated (3–5 min/scene locally on Mac via Phosphene, or ~30–60s via free HF quota)">
+                  <option value="auto" selected>⚡ Auto (LTX-2.3 Free HF → Wan 2.2 → Local Phosphene)</option>
+                  <option value="ltx23_hf">☁️ LTX-2.3 (Free HF Quota · ~30–60s/scene)</option>
+                  <option value="wan22_hf">☁️ Wan 2.2 (Free HF Quota · ~1 min/scene)</option>
+                  <option value="phosphene_ltx">💻 Phosphene LTX-2.5 (Local Mac · 3–5 min/scene)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="audio-toggle" id="carMotionAudioContainer" style="flex: 0 1 290px; background: rgba(9, 13, 22, 0.85);">
+              <label for="carMotionAudioSelect" class="audio-toggle-label">🔊 Audio:</label>
+              <select id="carMotionAudioSelect" class="select-dropdown audio-dropdown" title="Select audio mode for Car Edit">
+                <option value="without_voice" selected>🎵 Phonk Track Only (Swxft Default)</option>
+                <option value="with_voice">🔊 Voiceover + Phonk Track</option>
+              </select>
+            </div>
+          </div>
         </div>
 
-        <!-- Music Track Selector -->
-        <div class="music-toggle" id="musicToggleContainer">
-          <label for="musicTrackSelect" class="audio-toggle-label">🎵 Track:</label>
-          <select id="musicTrackSelect" class="select-dropdown audio-dropdown" title="Select Music Soundtrack">
-            <option value="default" selected>✨ Auto Ambience</option>
-            <option value="yt_epic_bravery">📻 YT: Epic Bravery</option>
-            <option value="yt_cyber_warfare">📻 YT: Cyber Warfare</option>
-            <option value="yt_tactical_strike">📻 YT: Tactical Strike</option>
-            <option value="yt_dark_recon">📻 YT: Dark Recon</option>
-            <option value="yt_jet_afterburner">📻 YT: Jet Afterburner</option>
-            <option value="ai_epic_cinematic">⚡ AI: Epic Cinematic</option>
-            <option value="ai_cyber_ambient">⚡ AI: Cyber Dark Synth</option>
-            <option value="ai_tactical_strike">⚡ AI: Tactical Strike</option>
-            <option value="ai_stealth_infiltrator">⚡ AI: Stealth Infiltrator</option>
-            <option value="ai_supersonic_jet">⚡ AI: Supersonic Jet</option>
-          </select>
+        <!-- Car Sub-Tab 3: 7-Day Rolling Queue, Mood Rotation & Telegram Approval -->
+        <div id="carSubTabQueue" class="car-subtab-pane hidden">
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid rgba(35, 48, 74, 0.7);">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="badge" style="background: linear-gradient(135deg, #10b981, #059669); color: #fff; font-size: 11.5px; font-weight: 800; padding: 4px 10px;">📅 7-Day Rolling Queue</span>
+              <span class="badge" style="background: linear-gradient(135deg, #8b5cf6, #6366f1); color: #fff; font-size: 11.5px; font-weight: 800; padding: 4px 10px;">🎵 Daily Mood Rotation</span>
+              <span class="badge" style="background: linear-gradient(135deg, #0ea5e9, #0284c7); color: #fff; font-size: 11.5px; font-weight: 800; padding: 4px 10px;">📲 Telegram Approval</span>
+              <span id="carQueueTgStatusBadge" style="font-size: 12px; color: #94a3b8; font-weight: 600;">Target: @AutoFlashX (UCuJ9LcSqliLH0VEJ9lWZsrQ · Private)</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <button type="button" class="btn btn-secondary btn-xs" onclick="pollCarQueueTelegramApprovals()" style="padding: 5px 10px; font-size: 11.5px; border-color: #38bdf8; color: #38bdf8;">
+                📲 Poll Telegram Approvals
+              </button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="refillCarQueue(false)" style="padding: 5px 10px; font-size: 11.5px;">
+                🔄 Top-Up 7 Days
+              </button>
+              <button type="button" class="btn btn-secondary btn-xs" onclick="refillCarQueue(true)" style="padding: 5px 10px; font-size: 11.5px; border-color: #f59e0b; color: #fbbf24;">
+                🎲 Rotate All 7 Days
+              </button>
+            </div>
+          </div>
+
+          <div id="carQueueSlotsGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px;">
+            <!-- Populated dynamically by loadCarQueue() -->
+          </div>
         </div>
+      </section>
+    </div>
 
-        <!-- Image Studio, Music Studio & QA Buttons -->
-        <button id="btnOpenStudioDash" class="btn btn-secondary btn-sm" onclick="openStudioModal(1)" title="Open Full-Screen Multi-Layer Image Studio">
-          🎨 Image Studio
-        </button>
-        <button id="btnOpenMusicStudio" class="btn btn-secondary btn-sm" onclick="openMusicModal()" title="Open AI Music Studio & YouTube Audio Library">
-          🎵 Music Studio
-        </button>
-        <button id="btnRunQATests" class="btn btn-secondary btn-sm" onclick="runQASanityTests()" title="Run QA Tester Agent to verify all components and sanity">
-          🛡️ QA Sanity
-        </button>
-
-        <!-- Toggle Dashboard Prompt Editor -->
-        <button id="btnToggleDashPrompt" class="btn btn-secondary btn-sm" title="View & Edit Prompt Generator Template">
-          📝 Prompt Spec
-        </button>
-      </div>
-    </section>
+    <!-- TAB 3: MUSIC (Music Only button moved here + Quick Music & Clips controls) -->
+    <div id="mainTabMusic" class="workspace-tab-pane hidden">
+      <section class="controls-panel workspace-card-panel">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;">
+          <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+            <button id="btnMusicOnly" class="btn btn-music-only" onclick="openMusicOnlyStudio()" title="Create Music Only (Sleep, Flute Healing, Japanese Zen, Tibet Bowls, Devotional, Bhakti, Raining, Sea Waves, Andean Pan Flute) + Visual Clips">
+              <span class="btn-icon">🎵</span> Music Only
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="openMusicModal()" title="Open Full AI Music Studio &amp; Saved Audio Library">
+              <span class="btn-icon">🎛️</span> Open Music Studio &amp; Library
+            </button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <span style="font-size: 12.5px; color: #94a3b8; font-weight: 600;">Quick Launch:</span>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Sleep Music')">🌙 Sleep</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Flute Healing')">✨ Flute Healing</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Japanese Music')">🌸 Japanese</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Tibet Music')">🥣 Tibet</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Devotional')">🙏 Devotional</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Bhakti')">🕉️ Bhakti</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Raining')">🌧️ Raining</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Sea Waves')">🌊 Sea</button>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="openMusicOnlyStudio('Andean Pan Flute')">🏔️ Andean Flute</button>
+          </div>
+        </div>
+      </section>
+    </div>
 
     <!-- Dashboard Prompt Editor Drawer -->
     <section id="dashPromptSection" class="meta-section hidden" style="margin: 0 24px 16px 24px; background: rgba(15, 23, 42, 0.95); border: 1px solid #38bdf8; border-radius: 12px; padding: 16px;">
@@ -305,7 +596,7 @@
             <div class="meta-section" style="background: rgba(9, 13, 22, 0.75); border: 1px solid #23304a; border-radius: 12px; padding: 14px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                 <h4 style="margin: 0; color: #f8fafc;">📺 YouTube Studio Channel Upload & Approval</h4>
-                <a href="https://studio.youtube.com/channel/UC4KV67NYzLi8JlrfB9J4hGg" target="_blank" style="font-size: 11.5px; color: #00e5ff; text-decoration: none; font-weight: 600;">
+                <a id="modalYtStudioChannelLink" href="https://studio.youtube.com/channel/UC4KV67NYzLi8JlrfB9J4hGg" target="_blank" style="font-size: 11.5px; color: #00e5ff; text-decoration: none; font-weight: 600;">
                   Open Channel UC4KV67NYzLi8JlrfB9J4hGg ↗
                 </a>
               </div>
@@ -332,13 +623,13 @@
 
               <div class="publish-section" style="display: flex; gap: 8px; flex-wrap: wrap;">
                 <select id="publishPrivacySelect" class="select-dropdown" style="display: none;">
-                  <option value="private" selected>Save as Draft / Private First (Requires Approval to Go Live)</option>
+                  <option value="private" selected>Private (you make it public or schedule it in YouTube Studio)</option>
                 </select>
                 <button id="btnModalPublish" class="btn btn-accent" style="flex: 1;">
                   🚀 Upload to YouTube Shorts (Save & Fill All Fields)
                 </button>
                 <button id="btnModalApproveLive" class="btn btn-primary hidden" style="flex: 1; background: linear-gradient(135deg, #10b981, #059669); color: #fff; justify-content: center;">
-                  ✅ Approve & Go Live Now
+                  ✅ Approve (stays Private)
                 </button>
                 <button id="btnModalDelete" class="btn btn-danger" title="Permanently delete this video">
                   🗑️ Delete
@@ -532,6 +823,54 @@
           <div id="layerStudioStatus" style="font-size: 12px; color: #10b981; font-weight: 500;"></div>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Scene Motion & Effects (zoom / pan / focus / filters) with live preview -->
+  <div id="sceneEffectsModal" class="modal-backdrop hidden" style="z-index: 12000;">
+    <div class="modal-card fx-modal-card">
+      <div class="caption-modal-head">
+        <div>
+          <h3>🎞 Scene <span id="fxSceneNum">1</span>: Motion &amp; Effects</h3>
+          <p>Camera movement and look for this scene. The preview is rendered like the final video.</p>
+        </div>
+        <button class="modal-close" onclick="closeSceneEffectsModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="fx-body">
+        <div class="fx-controls">
+          <p id="fxClipNote" class="fx-note hidden">This scene uses a video clip: Speed Ramps, Beat Flash, filters, vignette and fades apply directly to the clip.</p>
+          <div id="fxMotionBlock">
+            <label class="fx-label" for="fxMotion">Camera motion</label>
+            <select id="fxMotion"></select>
+            <label class="fx-label">Strength</label>
+            <div id="fxStrength" class="fx-segs"></div>
+          </div>
+          <label class="fx-label" for="fxSpeedRamp">Speed Ramp (Velocity Curve)</label>
+          <select id="fxSpeedRamp"></select>
+          <label class="fx-label">Focus point</label>
+          <div class="fx-focus-wrap">
+            <img id="fxFocusImg" alt="Scene image: click to set the focus point">
+            <span id="fxFocusDot" class="fx-focus-dot"></span>
+          </div>
+          <span id="fxFocusHint" class="fx-hint"></span>
+          <label class="fx-label">Filter</label>
+          <div id="fxFilters" class="fx-chips"></div>
+          <div id="fxToggles" class="fx-toggles"></div>
+        </div>
+        <div class="fx-preview-col">
+          <div class="fx-preview-frame">
+            <video id="fxPreviewVideo" muted loop playsinline></video>
+            <div id="fxPreviewBusy" class="caption-preview-busy hidden">Rendering…</div>
+          </div>
+          <span id="fxStatus" class="scene-save-status"></span>
+        </div>
+      </div>
+      <div class="caption-modal-foot">
+        <label class="caption-toggle"><input type="checkbox" id="fxApplyAll"> Apply to all scenes</label>
+        <span style="flex:1"></span>
+        <button class="btn btn-secondary btn-sm" onclick="saveSceneEffects(false)">💾 Save</button>
+        <button class="btn btn-primary btn-sm" onclick="saveSceneEffects(true)">💾 Save &amp; Re-render</button>
       </div>
     </div>
   </div>
@@ -843,15 +1182,233 @@
         <!-- Tab 1: Create Music (Matches Exact User Reference Design) -->
         <div id="tabContentCreateMusic" class="music-tab-content">
           <div style="background: #090d16; border: 1px solid #1e293b; border-radius: 14px; padding: 22px;">
-            <div style="margin-bottom: 20px;">
-              <h3 style="margin: 0 0 4px 0; font-size: 20px; font-weight: 700; color: #f8fafc;">Create Music</h3>
-              <p style="margin: 0; font-size: 13px; color: #94a3b8;">Generate original music with AI</p>
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 18px;">
+              <div>
+                <h3 style="margin: 0 0 4px 0; font-size: 20px; font-weight: 700; color: #f8fafc;">Create Music &amp; Clips</h3>
+                <p style="margin: 0; font-size: 13px; color: #94a3b8;">Generate original music or relaxation soundscapes &amp; create visual video clips</p>
+              </div>
+              <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <label style="font-size: 12px; color: #cbd5e1; font-weight: 600; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.85); padding: 4px 10px; border-radius: 8px; border: 1px solid #1e293b;">
+                  ⏱️ Music Time:
+                  <select id="musicOnlyDurationSelect" onchange="syncMusicDurationFromTop()" style="padding: 5px 10px; background: #0f172a; border: 1px solid #38bdf8; border-radius: 6px; color: #38bdf8; font-size: 12px; font-weight: 700;">
+                    <option value="30">30 sec</option>
+                    <option value="60" selected>1 min (60 sec)</option>
+                    <option value="120">2 min</option>
+                    <option value="180">3 min</option>
+                    <option value="300">5 min</option>
+                    <option value="600">10 min</option>
+                    <option value="900">15 min</option>
+                    <option value="1200">20 min</option>
+                    <option value="1800">30 min</option>
+                    <option value="2700">45 min</option>
+                    <option value="3600">60 min (1 Hour)</option>
+                    <option value="custom">✏️ Custom Minutes...</option>
+                  </select>
+                </label>
+                <label id="customMusicMinutesWrap" style="display: none; font-size: 12px; color: #cbd5e1; font-weight: 600; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.85); padding: 4px 10px; border-radius: 8px; border: 1px solid #38bdf8;">
+                  Minutes:
+                  <input type="number" id="customMusicMinutesInput" value="10" min="0.5" max="60" step="0.5" oninput="syncMusicDurationFromTop()" style="width: 68px; padding: 4px 8px; background: #050811; border: 1px solid #38bdf8; border-radius: 6px; color: #38bdf8; font-size: 12px; font-weight: 700;">
+                  <span style="color: #7dd3fc; font-size: 11px;">min</span>
+                </label>
+                <label style="font-size: 12px; color: #cbd5e1; font-weight: 600; display: flex; align-items: center; gap: 6px; background: rgba(15, 23, 42, 0.85); padding: 4px 10px; border-radius: 8px; border: 1px solid #1e293b;">
+                  🎬 Visual Clips Count:
+                  <select id="musicOnlyClipCountSelect" style="padding: 5px 10px; background: #0f172a; border: 1px solid #38bdf8; border-radius: 6px; color: #38bdf8; font-size: 12px; font-weight: 700;">
+                    <option value="2">2 Clips</option>
+                    <option value="3" selected>3 Clips (Recommended)</option>
+                    <option value="4">4 Clips</option>
+                    <option value="5">5 Clips</option>
+                    <option value="6">6 Clips</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <!-- Music Only: Dedicated Relaxation & Soundscape Options (Options 6 - 10) -->
+            <div id="musicOnlyOptionsPanel" style="background: linear-gradient(135deg, rgba(15, 23, 42, 0.95), rgba(12, 19, 34, 0.95)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 12px; padding: 16px; margin-bottom: 22px; box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">🎵</span>
+                  <span style="font-size: 14.5px; font-weight: 800; color: #38bdf8; letter-spacing: 0.2px;">Music Only — Relaxation, Meditation &amp; Sound Therapy Options</span>
+                </div>
+                <span class="badge" style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; font-size: 11px; font-weight: 700; padding: 3px 9px;">Click any option to Generate Music or Create Clips</span>
+              </div>
+
+              <div id="musicOnlyCardsGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(225px, 1fr)); gap: 10px;">
+                <!-- 6. Sleep Music -->
+                <div class="music-only-option-card active" data-category="Sleep Music" onclick="selectMusicOnlyOption('Sleep Music', 'Relaxing', 'Slow ambient music and soft soundscapes for bedtime, warm dreamy lullaby pads, gentle celesta overtones, deep peaceful sleep', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">6. 🌙 Sleep Music</span>
+                    <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; font-size: 10px;">56 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Slow ambient music and soft soundscapes for bedtime.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Sleep Music', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Sleep Music', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 7. Flute Meditation Music -->
+                <div class="music-only-option-card" data-category="Flute Meditation" onclick="selectMusicOnlyOption('Flute Meditation', 'Relaxing', 'Soft bamboo flute and traditional instrumental music, peaceful Bansuri meditation melody, warm harmonic drone, gentle temple bells', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">7. 🪈 Flute Meditation Music</span>
+                    <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; font-size: 10px;">64 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Soft bamboo flute and traditional instrumental music.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Flute Meditation', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Flute Meditation', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 8. Deep Relaxation Ambient -->
+                <div class="music-only-option-card" data-category="Deep Relaxation" onclick="selectMusicOnlyOption('Deep Relaxation', 'Relaxing', 'Atmospheric drones and gentle sound textures, deep relaxation ambient soundscape, weightless harmonic washes', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">8. 🌊 Deep Relaxation Ambient</span>
+                    <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; font-size: 10px;">54 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Atmospheric drones and gentle sound textures.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Deep Relaxation', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Deep Relaxation', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 9. Binaural Beats -->
+                <div class="music-only-option-card" data-category="Binaural Beats" onclick="selectMusicOnlyOption('Binaural Beats', 'Relaxing', 'Different frequencies played into each ear to create a perceived beat, stereo theta and alpha binaural entrainment waves with soft ambient pad', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">9. 🎧 Binaural Beats</span>
+                    <span class="badge" style="background: rgba(168, 85, 247, 0.2); color: #c084fc; font-size: 10px;">Stereo Hz</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Different frequencies played into each ear to create a perceived beat. Evidence for specific benefits is limited.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Binaural Beats', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Binaural Beats', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 10. Indian Classical Raga Therapy -->
+                <div class="music-only-option-card" data-category="Raga Therapy" onclick="selectMusicOnlyOption('Raga Therapy', 'Relaxing', 'Selected ragas and instrumental performances for relaxation and emotional engagement, expressive Sitar and Bansuri alap over resonant Tanpura drone', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">10. 🪕 Indian Classical Raga Therapy</span>
+                    <span class="badge" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; font-size: 10px;">68 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Selected ragas and instrumental performances for relaxation and emotional engagement.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Raga Therapy', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Raga Therapy', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 11. Flute Healing Music -->
+                <div class="music-only-option-card" data-category="Flute Healing" onclick="selectMusicOnlyOption('Flute Healing', 'Relaxing', '528Hz Solfeggio healing flute melodies, emotional expressive breathy woodwind, singing crystal bowls, warm chakra aura pad', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">11. ✨ Flute Healing Music</span>
+                    <span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; font-size: 10px;">528 Hz · 60 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">528Hz Solfeggio healing flute melodies, crystal singing bowls, and chakra aura pads.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Flute Healing', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Flute Healing', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 12. Japanese Zen Music -->
+                <div class="music-only-option-card" data-category="Japanese Music" onclick="selectMusicOnlyOption('Japanese Music', 'Relaxing', 'Traditional Japanese Koto plucked strings, breathy Shakuhachi bamboo flute in Hirajoshi pentatonic scale, serene Kyoto Zen garden temple bells', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">12. 🌸 Japanese Zen Music</span>
+                    <span class="badge" style="background: rgba(244, 114, 182, 0.2); color: #f472b6; font-size: 10px;">Koto · 62 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Traditional Koto zither, Shakuhachi bamboo flute, and Kyoto Zen garden chimes.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Japanese Music', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Japanese Music', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 13. Tibetan Singing Bowls -->
+                <div class="music-only-option-card" data-category="Tibet Music" onclick="selectMusicOnlyOption('Tibet Music', 'Relaxing', 'Resonant Tibetan bronze singing bowls, deep Himalayan temple gongs, overtone meditation drone, peaceful monastery sanctuary', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">13. 🥣 Tibet Singing Bowls</span>
+                    <span class="badge" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; font-size: 10px;">432 Hz · 52 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Deep Tibetan bronze singing bowls, Himalayan temple gongs, and overtone drones.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Tibet Music', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Tibet Music', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 14. Devotional Music -->
+                <div class="music-only-option-card" data-category="Devotional" onclick="selectMusicOnlyOption('Devotional', 'Emotional', 'Sacred peaceful morning temple ambiance, warm harmonium reed chords, gentle Bansuri flute and Sitar melody, soft Manjira temple bells', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">14. 🙏 Devotional Music</span>
+                    <span class="badge" style="background: rgba(251, 146, 60, 0.2); color: #fb923c; font-size: 10px;">66 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Serene morning temple ambiance, warm harmonium chords, Bansuri flute &amp; Manjira bells.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Devotional', 'Emotional', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Devotional', 'Emotional', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 15. Bhakti Sangeet -->
+                <div class="music-only-option-card" data-category="Bhakti" onclick="selectMusicOnlyOption('Bhakti', 'Emotional', 'Soulful Indian Bhakti bhajan and kirtan instrumental rhythm, warm Harmonium melody, rhythmic Tabla and Dholak Keherwa groove, Kartal chimes', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">15. 🕉️ Bhakti Sangeet</span>
+                    <span class="badge" style="background: rgba(251, 146, 60, 0.2); color: #fb923c; font-size: 10px;">Tabla · 76 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Soulful Bhakti bhajan &amp; kirtan groove with Tabla/Dholak Keherwa taal, Harmonium &amp; Kartal.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Bhakti', 'Emotional', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Bhakti', 'Emotional', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 16. Rain & Soft Piano -->
+                <div class="music-only-option-card" data-category="Raining" onclick="selectMusicOnlyOption('Raining', 'Relaxing', 'Soothing natural rainfall patter, warm distant rolling thunder, delicate ambient felt-piano raindrop notes, cozy peaceful rain soundscape', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">16. 🌧️ Rain &amp; Soft Piano</span>
+                    <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; font-size: 10px;">58 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Soothing natural rainfall patter, distant warm thunder, and delicate raindrop piano.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Raining', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Raining', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 17. Ocean Waves & Sea Breeze -->
+                <div class="music-only-option-card" data-category="Sea Waves" onclick="selectMusicOnlyOption('Sea Waves', 'Relaxing', 'Rhythmic rolling ocean waves washing onto shore, gentle receding surf foam, warm sunset horizon ambient pads, serene coastal sea breeze', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">17. 🌊 Sea Waves &amp; Breeze</span>
+                    <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; font-size: 10px;">55 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Rhythmic rolling ocean surf washing ashore with peaceful coastal horizon pads.</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Sea Waves', 'Relaxing', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Sea Waves', 'Relaxing', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+
+                <!-- 18. Andean Pan Flute (Highland Spirit — Leo Rojas Inspired, Original Melodies) -->
+                <div class="music-only-option-card" data-category="Andean Pan Flute" onclick="selectMusicOnlyOption('Andean Pan Flute', 'Emotional', 'Original Highland Andean Pan Flute (Zampoña & Quena) soaring melodies inspired by classic pan-pipe ballads, warm acoustic guitar & charango arpeggios, deep Bombo legüero heartbeat drum, wide canyon echo', this)">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 13px; font-weight: 800; color: #f8fafc;">18. 🏔️ Andean Pan Flute</span>
+                    <span class="badge" style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; font-size: 10px;">Pan-Pipes · 74 BPM</span>
+                  </div>
+                  <p style="margin: 0 0 10px 0; font-size: 11.5px; color: #94a3b8; line-height: 1.4;">Soaring Zampoña pan-pipes &amp; Quena flute with charango, Bombo pulse &amp; canyon echo (Leo Rojas style, 100% original).</p>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn btn-xs btn-primary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Andean Pan Flute', 'Emotional', false, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; background: #2563eb;">🎵 Music Only</button>
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation(); quickRunMusicOnlyOption('Andean Pan Flute', 'Emotional', true, this)" style="flex: 1; font-size: 11px; padding: 5px 8px; border-color: #10b981; color: #34d399;">🎬 + Create Clips</button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- Music Category -->
             <div style="margin-bottom: 22px;">
               <label style="font-size: 13.5px; font-weight: 700; color: #f8fafc; display: block; margin-bottom: 10px;">Music Category</label>
-              <div id="musicCategoryPills" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 10px;">
+              <div id="musicCategoryPills" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); gap: 10px;">
                 <button type="button" class="btn-cat-pill active" onclick="selectMusicCategory('Metal', this)">Metal</button>
                 <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Rock', this)">Rock</button>
                 <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('EDM', this)">EDM</button>
@@ -861,6 +1418,19 @@
                 <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Pop', this)">Pop</button>
                 <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Indian', this)">Indian</button>
                 <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Ambient', this)">Ambient</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Sleep Music', this)">🌙 Sleep Music</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Flute Meditation', this)">🪈 Flute Meditation</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Deep Relaxation', this)">🌊 Deep Relaxation</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Binaural Beats', this)">🎧 Binaural Beats</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Raga Therapy', this)">🪕 Raga Therapy</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Flute Healing', this)">✨ Flute Healing</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Japanese Music', this)">🌸 Japanese Zen</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Tibet Music', this)">🥣 Tibet Bowls</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Devotional', this)">🙏 Devotional</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Bhakti', this)">🕉️ Bhakti</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Raining', this)">🌧️ Raining</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Sea Waves', this)">🌊 Sea Waves</button>
+                <button type="button" class="btn-cat-pill" onclick="selectMusicCategory('Andean Pan Flute', this)">🏔️ Andean Pan Flute</button>
               </div>
             </div>
 
@@ -935,27 +1505,57 @@
 
             <!-- Duration -->
             <div style="margin-bottom: 22px;">
-              <label style="font-size: 13.5px; font-weight: 700; color: #f8fafc; display: block; margin-bottom: 12px;">Duration</label>
-              <div style="display: flex; gap: 24px; align-items: center; flex-wrap: wrap;">
+              <label style="font-size: 13.5px; font-weight: 700; color: #f8fafc; display: block; margin-bottom: 12px;">Duration (Music Length)</label>
+              <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap;">
                 <label class="music-radio-label">
-                  <input type="radio" name="musicDuration" value="30">
+                  <input type="radio" name="musicDuration" value="30" onchange="syncMusicDurationFromRadio(this)">
                   <span class="custom-radio-dot"></span>
                   <span class="radio-text">30 sec</span>
                 </label>
                 <label class="music-radio-label">
-                  <input type="radio" name="musicDuration" value="60" checked>
+                  <input type="radio" name="musicDuration" value="60" checked onchange="syncMusicDurationFromRadio(this)">
                   <span class="custom-radio-dot"></span>
-                  <span class="radio-text">60 sec</span>
+                  <span class="radio-text">1 min (60s)</span>
                 </label>
                 <label class="music-radio-label">
-                  <input type="radio" name="musicDuration" value="120">
+                  <input type="radio" name="musicDuration" value="120" onchange="syncMusicDurationFromRadio(this)">
                   <span class="custom-radio-dot"></span>
                   <span class="radio-text">2 min</span>
                 </label>
                 <label class="music-radio-label">
-                  <input type="radio" name="musicDuration" value="180">
+                  <input type="radio" name="musicDuration" value="180" onchange="syncMusicDurationFromRadio(this)">
                   <span class="custom-radio-dot"></span>
                   <span class="radio-text">3 min</span>
+                </label>
+                <label class="music-radio-label">
+                  <input type="radio" name="musicDuration" value="300" onchange="syncMusicDurationFromRadio(this)">
+                  <span class="custom-radio-dot"></span>
+                  <span class="radio-text">5 min</span>
+                </label>
+                <label class="music-radio-label">
+                  <input type="radio" name="musicDuration" value="600" onchange="syncMusicDurationFromRadio(this)">
+                  <span class="custom-radio-dot"></span>
+                  <span class="radio-text">10 min</span>
+                </label>
+                <label class="music-radio-label">
+                  <input type="radio" name="musicDuration" value="900" onchange="syncMusicDurationFromRadio(this)">
+                  <span class="custom-radio-dot"></span>
+                  <span class="radio-text">15 min</span>
+                </label>
+                <label class="music-radio-label">
+                  <input type="radio" name="musicDuration" value="1200" onchange="syncMusicDurationFromRadio(this)">
+                  <span class="custom-radio-dot"></span>
+                  <span class="radio-text">20 min</span>
+                </label>
+                <label class="music-radio-label">
+                  <input type="radio" name="musicDuration" value="1800" onchange="syncMusicDurationFromRadio(this)">
+                  <span class="custom-radio-dot"></span>
+                  <span class="radio-text">30 min</span>
+                </label>
+                <label class="music-radio-label">
+                  <input type="radio" name="musicDuration" value="3600" onchange="syncMusicDurationFromRadio(this)">
+                  <span class="custom-radio-dot"></span>
+                  <span class="radio-text">60 min</span>
                 </label>
               </div>
             </div>
@@ -971,6 +1571,9 @@
               <button id="btnGenerateCustomMusic" class="btn btn-primary" onclick="triggerGenerateCustomMusic()" style="padding: 11px 26px; font-size: 13.5px; font-weight: 700; background: #2563eb; border-radius: 8px; border: none; cursor: pointer;">
                 ⚡ Generate Music
               </button>
+              <button id="btnCreateMusicOnlyClips" class="btn btn-primary" onclick="triggerCreateMusicOnlyClips(false)" style="padding: 11px 22px; font-size: 13.5px; font-weight: 700; background: linear-gradient(135deg, #059669, #10b981); border-radius: 8px; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;">
+                🎬 Create Music &amp; Clips
+              </button>
               <button id="btnDeepCheckMusic" class="btn btn-secondary" onclick="triggerDeepVerifyCurrentMusic()" style="display: none; padding: 11px 20px; font-size: 13px; font-weight: 700; background: #0b1329; border: 1px solid #38bdf8; color: #38bdf8; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
                 🔍 Check & Verify Deeply
               </button>
@@ -983,6 +1586,24 @@
               </label>
               <span id="musicEngineHint" style="font-size: 11.5px; color: #94a3b8; flex-basis: 100%;">ACE-Step gives real AI music. If its server is off, the app falls back to Local Procedural automatically.</span>
               <span id="customMusicStatus" style="font-size: 12.5px; color: #10b981; font-weight: 500;"></span>
+            </div>
+
+            <!-- Generated Music-Only Visual Video Clips Showcase -->
+            <div id="musicOnlyClipsOutputBox" style="display: none; background: #060b16; border: 1px solid #10b981; border-radius: 12px; padding: 18px; margin-top: 14px; margin-bottom: 14px; box-shadow: 0 4px 20px rgba(16, 185, 129, 0.2);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                  <span style="font-size: 18px;">🎬</span>
+                  <span id="musicOnlyClipsTitle" style="font-size: 15px; font-weight: 800; color: #34d399;">Generated Music-Only Visual Clips</span>
+                  <span id="musicOnlyClipsBadge" class="badge" style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7; font-size: 11px;">3 Clips + Full Short</span>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <button id="btnOpenMusicShortProject" type="button" class="btn btn-xs btn-primary" style="background: #2563eb; font-size: 11.5px; padding: 6px 12px; font-weight: 700;">
+                    📺 Open Full Short in Studio
+                  </button>
+                </div>
+              </div>
+              <div id="musicOnlyClipsGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px;">
+              </div>
             </div>
 
             <!-- Live Player & Save in Library Box -->
@@ -1148,6 +1769,9 @@
                   </button>
                   <button type="button" class="btn btn-secondary btn-sm" onclick="saveCurrentTrimmedClipToLibrary()" style="font-weight: 600;">
                     💾 Save Trimmed Clip to Library
+                  </button>
+                  <button type="button" id="btnCreateClipsFromCurrentTrack" class="btn btn-primary btn-sm" onclick="triggerCreateMusicOnlyClips(true)" style="background: #10b981; border: none; font-weight: 700;">
+                    🎬 Create Visual Video Clips for This Music
                   </button>
                   <span id="clipCutterStatus" style="font-size: 11.5px; color: #10b981; font-weight: 500;"></span>
                 </div>
@@ -1505,6 +2129,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20"></script>
+  <script src="/static/app.js?v=25"></script>
 </body>
 </html>

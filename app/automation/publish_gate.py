@@ -57,6 +57,8 @@ def evaluate(project: Dict[str, Any]) -> Tuple[bool, List[str]]:
                 reasons.append(f"Scene {n}: AI image not content-verified")
         elif src in ("weaponx_lab_poster",):
             pass  # rendered locally from verified data rows
+        elif src == "car_title_card":
+            pass  # car intro/outro card rendered locally (brand logo + verified specs)
         else:
             reasons.append(f"Scene {n}: unverified image source '{src}'")
     if not project.get("video_path"):
@@ -68,6 +70,33 @@ def evaluate(project: Dict[str, Any]) -> Tuple[bool, List[str]]:
     except Exception as e:
         reasons.append(f"Metadata check failed: {e}")
     return (not reasons), reasons
+
+
+def fresh_qa(project: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Re-runs Verify-video on the project as it is NOW (edits, music or Hindi changes after the last
+    render leave the stored report stale), saves the report and returns (passed, failed-check reasons)."""
+    from agents.verify_video import VerifyVideoAgent
+    report = VerifyVideoAgent().run(project_record=project)
+    project["qa_report"] = report
+    project["verify_video_report"] = report
+    project["ready_for_showing"] = bool(report.get("ready_for_showing"))
+    StorageManager.save_project(project)
+    # Quick, safe repairs (re-master audio, clean metadata) happen here instead of blocking the user;
+    # anything needing a re-render or new images is left for the user to start.
+    if not report.get("qa_passed") and set(report.get("auto_fixes") or []) & {"remaster", "clean_metadata"}:
+        try:
+            from app.agents.pipeline import ShortsPipeline
+            repaired = ShortsPipeline().auto_repair(project["id"], max_rounds=1, allow_rerender=False)
+            project.clear()
+            project.update(repaired)
+            report = project["qa_report"]
+        except Exception as e:
+            print(f"[PublishGate] quick repair skipped: {e}")
+    reasons = [f"{c.get('name')}: {c.get('detail') or ''}".strip().rstrip(":")
+               for c in report.get("all_checks", []) if not c.get("passed")]
+    if not report.get("qa_passed") and not reasons:
+        reasons = [f"Quality score {report.get('overall_score')}% is below the 80% bar"]
+    return bool(report.get("qa_passed")), reasons
 
 
 def _summary(project: Dict[str, Any]) -> str:
@@ -136,10 +165,23 @@ def handle_decision(action: str, project_id: str) -> str:
     if action == "reject":
         project["status"] = "rejected"
         StorageManager.save_project(project)
+        if project.get("car_queue_slot_id"):
+            try:
+                from app.automation import car_queue
+                car_queue.update_slot(project["car_queue_slot_id"], {"status": "rejected"})
+            except Exception:
+                pass
         return f"Rejected: {project.get('title') or project_id}. Nothing was uploaded or changed on YouTube."
     if action == "approve":
-        if project.get("status") in ("approved_private", "published"):
+        if project.get("status") in ("approved_private", "published", "uploaded_private"):
             return "Already approved. It is private on YouTube; publish or schedule it in YouTube Studio."
+        # Re-check quality on the video as it is now. A project in 'awaiting_review' was sent with its
+        # problems listed, so approving it is an informed decision; anything else must pass.
+        ok, reasons = fresh_qa(project)
+        if not ok and project.get("status") != "awaiting_review":
+            return ("Not approved: the video fails its quality check now:\n"
+                    + "\n".join(f"• {r[:120]}" for r in reasons[:5])
+                    + "\nFix it in the dashboard (or approve it there anyway) and try again.")
         from app.agents.youtube_publisher import YouTubePublisher
         yt = project.get("youtube") or {}
         if yt.get("video_id") and not str(yt.get("video_id")).startswith("staged_"):
@@ -152,5 +194,11 @@ def handle_decision(action: str, project_id: str) -> str:
         project["youtube"] = res
         project["status"] = "approved_private"
         StorageManager.save_project(project)
+        if project.get("car_queue_slot_id"):
+            try:
+                from app.automation import car_queue
+                car_queue.update_slot(project["car_queue_slot_id"], {"status": "approved_private", "project_id": project["id"]})
+            except Exception:
+                pass
         return f"Approved and kept PRIVATE. Publish or schedule it in YouTube Studio: {_studio_link(res)}"
     return "Unknown action."

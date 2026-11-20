@@ -147,6 +147,15 @@ def scheduled_job():
     return job
 
 
+def scheduled_car_edit_job():
+    """Daily Car Edit trigger: refills the 7-day car queue and enqueues today's mood-rotated Car Edit."""
+    from app.automation import car_queue
+    car_queue.refill_7_day_queue()
+    res = car_queue.enqueue_slot_job()
+    print(f"🏎️ [Scheduler] Daily Car Edit queued: {res['slot']['car_name']} ({res['slot']['mood_label']}) -> job {res['job']['id']}")
+    return res
+
+
 def _run_daily_short(job: Dict[str, Any]) -> Dict[str, Any]:
     from app.agents.pipeline import ShortsPipeline
     from app.utils.storage import StorageManager
@@ -202,6 +211,9 @@ def process_queue():
     try:
         if job["kind"] == "daily_short":
             result = _run_daily_short(job)
+        elif job["kind"] == "daily_car_edit":
+            from app.automation import car_queue
+            result = car_queue.run_car_edit_job(job)
         else:
             raise ValueError(f"Unknown job kind: {job['kind']}")
         jobs.complete(job["id"], result)
@@ -220,14 +232,33 @@ def process_queue():
 
 
 def build_music_library():
-    """Nightly: grow the mood music library with ACE-Step while nothing else needs the memory."""
-    from app.automation import music_library
-    res = music_library.build_overnight()
-    print(f"🎵 [Scheduler] Music library: {res}")
-    if res.get("generated"):
-        notifier.send(f"🎵 Added {len(res['generated'])} music tracks overnight "
-                      f"({res['moods_covered']}/{res['moods_total']} moods covered).")
-    return res
+    """Nightly: pre-make NEW themed tracks for car/weapon videos (each used by one video only), then grow
+    the mood library, while nothing else needs the memory. ACE-Step starts once and makes every track."""
+    import time as _t
+    from app.automation import jobs, music_library, resources
+    from agents import theme_music
+    if any(j["status"] == "running" for j in jobs.all_jobs()):
+        print("🎵 [Scheduler] Music: skipped (a video job is running)")
+        return {"skipped": "a video job is running"}
+    for other in ("phosphene", "ollama"):  # free the memory ACE-Step needs (only if idle)
+        try:
+            if resources.is_running(other) and not resources.is_busy(other):
+                resources.stop(other)
+        except Exception:
+            pass
+    try:
+        with resources.lease("acestep"):  # one cold start for the whole batch
+            pool = theme_music.refill_pool(max_tracks=int(os.getenv("THEME_POOL_NIGHTLY", "16")),
+                                           deadline=_t.time() + 100 * 60)
+            lib = music_library.build_overnight(max_tracks=3)
+    except Exception as e:
+        pool, lib = {"generated": [], "errors": [str(e)]}, {}
+    print(f"🎵 [Scheduler] Theme pool: {pool}")
+    print(f"🎵 [Scheduler] Music library: {lib}")
+    if pool.get("generated"):
+        notifier.send(f"🎵 Pre-made {len(pool['generated'])} new themed tracks overnight "
+                      f"({pool.get('tracks')} ready; car & weapon videos won't wait for music).")
+    return {"pool": pool, "library": lib}
 
 
 def poll_approvals():
@@ -258,7 +289,22 @@ def main():
     parser.add_argument("--summary", action="store_true", help="Send the daily summary now")
     parser.add_argument("--test-alert", action="store_true", help="Send a test notification")
     parser.add_argument("--build-music", type=int, metavar="N", help="Generate N music library tracks now")
+    parser.add_argument("--car-queue", action="store_true", help="Show/refill the 7-day Car Edit queue")
+    parser.add_argument("--run-car-now", action="store_true", help="Enqueue & run today's Car Edit slot immediately")
     args = parser.parse_args()
+
+    if args.car_queue:
+        from app.automation import car_queue
+        print(json.dumps(car_queue.get_queue(auto_fill=True), indent=2, default=str))
+        return
+    if args.run_car_now:
+        from app.automation import car_queue
+        car_queue.enqueue_slot_job()
+        _lock = _single_instance()
+        jobs.recover_interrupted(force=True)
+        while process_queue():
+            pass
+        return
 
     if args.status:
         from app.automation import resources
@@ -300,6 +346,8 @@ def main():
 
     scheduler = BlockingScheduler(timezone=tz)
     scheduler.add_job(scheduled_job, "cron", hour=hour, minute=minute, id="daily_enqueue", misfire_grace_time=6 * 3600, coalesce=True)
+    c_hour, c_min = map(int, os.getenv("CAR_EDIT_SCHEDULE_TIME", "20:00").split(":"))
+    scheduler.add_job(scheduled_car_edit_job, "cron", hour=c_hour, minute=c_min, id="daily_car_enqueue", misfire_grace_time=6 * 3600, coalesce=True)
     scheduler.add_job(process_queue, "interval", minutes=1, id="worker", max_instances=1, coalesce=True)
     scheduler.add_job(poll_approvals, "interval", seconds=20, id="approvals", max_instances=1, coalesce=True)
     scheduler.add_job(health.check_all, "interval", minutes=HEALTH_CHECK_MINUTES, id="health", max_instances=1,

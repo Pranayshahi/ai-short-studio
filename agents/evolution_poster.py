@@ -138,7 +138,11 @@ def _download(url: str, dest: Path) -> bool:
         try:
             r = requests.get(url, headers=headers, timeout=30)
             if r.status_code == 200 and len(r.content) > 5000:
-                Image.open(io.BytesIO(r.content)).convert("RGB").save(dest, quality=92)
+                im = Image.open(io.BytesIO(r.content))
+                ready = _ready_cutout(im)
+                if ready is not None:  # keep the transparency (a ready-made cutout) next to the JPEG
+                    ready.save(_alpha_path(dest))
+                _rgb_on_white(im).save(dest, quality=92)  # white, never black, behind transparent areas
                 return True
         except (requests.RequestException, OSError):
             pass
@@ -194,24 +198,81 @@ def _commons_photos(model: Dict[str, Any], limit: int = 8) -> List[Dict[str, str
     return found[:limit]
 
 
-def _exterior_ok(cut: Image.Image) -> bool:
-    """AI check on the cutout: an outside view of a complete vehicle, not an interior/wreck/partial."""
+PERSON_SHARE_MAX = 0.15
+
+
+def _exterior_ok(cut: Image.Image, kind: str = "vehicle") -> bool:
+    """AI check on the cutout: an outside view of a complete vehicle, not an interior/wreck/partial.
+    kind='firearm': the weapon on its own, not a person holding/firing it (an M1911 chart showed a Marine)."""
     try:
         from agents import image_verifier as iv
         if not iv._load():
             return True
         import torch
-        good = ["an exterior photo of a complete armoured military vehicle", "a military vehicle seen from the side"]
-        bad = ["the interior of a vehicle", "a destroyed or burnt-out vehicle", "a vehicle partly submerged in water",
-               "a vehicle covered in dust and smoke", "a close-up of a machine part"]
+        noun = {"naval": "torpedo or missile", "missile": "missile", "aircraft": "military aircraft",
+                "warship": "warship", "artillery": "artillery gun", "air_defense": "missile launcher vehicle"}.get(kind)
+        if kind == "firearm":
+            good = ["a product photo of a handgun on a plain background", "a photo of a pistol by itself",
+                    "a side view of a firearm with nobody in the picture"]
+            bad = ["a soldier holding a pistol", "a person aiming a gun", "a photo of a person",
+                   "a close-up of a machine part", "a box of ammunition", "a gun holster"]
+        elif noun:
+            good = [f"a photo of a {noun}", f"a side view of a complete {noun}", f"a {noun} on display"]
+            bad = ["a photo of a person", "a group of people", "a close-up of a machine part", "a document or diagram",
+                   "the interior of a building", "a map"]
+            if kind in ("missile", "naval"):
+                # the weapon itself, not what carries or hides it (JASSM shown as an F-35; Gryphon under camo netting)
+                bad += ["a fighter jet aircraft", "a military truck", "camouflage netting over a vehicle", "a warship"]
+        else:
+            good = ["an exterior photo of a complete armoured military vehicle", "a military vehicle seen from the side"]
+            bad = ["the interior of a vehicle", "a destroyed or burnt-out vehicle", "a vehicle partly submerged in water",
+                   "a vehicle covered in dust and smoke", "a close-up of a machine part"]
         bg = Image.new("RGB", cut.size, "white")
         bg.paste(cut, mask=cut.split()[3])
         inputs = iv._processor(text=good + bad, images=bg, return_tensors="pt", padding=True).to(iv._device)
         with torch.no_grad():
             probs = iv._model(**inputs).logits_per_image.softmax(dim=-1)[0].cpu().tolist()
-        return sum(probs[:len(good)]) >= 0.6
+        ok = sum(probs[:len(good)]) >= 0.6
+        if ok and noun:
+            # A weapon chart shows the weapon, not the crew around it (Mark 54 photo: four workers)
+            import tempfile
+            from agents.image_generator import ImageGeneratorAgent
+            with tempfile.NamedTemporaryFile(suffix=".png") as tf:
+                bg.save(tf.name)
+                share = ImageGeneratorAgent._person_share(Path(tf.name))
+            if share is not None and share > PERSON_SHARE_MAX:
+                return False
+        return ok
     except Exception:
         return True
+
+
+def _alpha_path(jpg: Path) -> Path:
+    return jpg.with_name(jpg.stem + "_alpha.png")
+
+
+def _ready_cutout(im: Image.Image) -> Optional[Image.Image]:
+    """A photo that already has a transparent background IS a clean cutout: trim and use it as-is."""
+    if im.mode not in ("RGBA", "LA", "PA") and not (im.mode == "P" and "transparency" in im.info):
+        return None
+    rgba = im.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    hist = alpha.histogram()
+    clear_share = sum(hist[:16]) / float(rgba.width * rgba.height)
+    if not 0.05 <= clear_share <= 0.95:  # fully opaque (or nearly empty): not a usable cutout
+        return None
+    bbox = alpha.point(lambda a: 255 if a > 16 else 0).getbbox()
+    return rgba.crop(bbox) if bbox else None
+
+
+def _rgb_on_white(im: Image.Image) -> Image.Image:
+    """Flatten onto WHITE; .convert('RGB') alone turns transparent pixels black."""
+    if im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info):
+        rgba = im.convert("RGBA")
+        bg = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        bg.alpha_composite(rgba)
+        return bg.convert("RGB")
+    return im.convert("RGB")
 
 
 def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.Image], bool]:
@@ -221,14 +282,28 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
     key = re.sub(r"[^A-Za-z0-9]+", "_", model["title"])[:60]
     cut_p, raw_p = cache_dir / f"{key}_cut.png", cache_dir / f"{key}.jpg"
     if cut_p.exists():
-        return Image.open(cut_p).convert("RGBA"), True
+        cached = Image.open(cut_p).convert("RGBA")
+        # Cutouts cached under older, weaker checks are re-checked for strict kinds
+        if model.get("_kind", "vehicle") == "vehicle" or _exterior_ok(cached, model.get("_kind")):
+            return cached, True
+        cut_p.unlink(missing_ok=True)
     if not raw_p.exists():
         _download(model["image_url"], raw_p)
         time.sleep(1)
     if not raw_p.exists():
         return None, False
-    raw = Image.open(raw_p).convert("RGB")
+    kind = model.get("_kind", "vehicle")
+    strict = kind != "vehicle"  # vehicles keep the original behaviour; other kinds re-check every candidate
+    src = Image.open(raw_p)
+    alpha_p = _alpha_path(raw_p)
+    ready = _ready_cutout(Image.open(alpha_p)) if alpha_p.exists() else None
+    if ready is not None and (not strict or _exterior_ok(ready, kind)):
+        ready.save(cut_p)
+        return ready, True
+    raw = _rgb_on_white(src)
     cut = _cutout(raw)
+    if cut is not None and strict and not _exterior_ok(cut, kind):
+        cut = None
     if cut is None:
         lead_file = (model.get("image_file") or "").replace(" ", "_")
         for i, alt in enumerate(_commons_photos(model)):
@@ -236,8 +311,9 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
                 continue
             alt_p = cache_dir / f"{key}_alt{i}.jpg"
             if alt_p.exists() or _download(alt["url"], alt_p):
-                cut = _cutout(Image.open(alt_p).convert("RGB"))
-                if cut is not None and _exterior_ok(cut):
+                alt_a = _alpha_path(alt_p)
+                cut = (_ready_cutout(Image.open(alt_a)) if alt_a.exists() else None) or _cutout(Image.open(alt_p).convert("RGB"))
+                if cut is not None and _exterior_ok(cut, kind):
                     model["image_file_used"] = alt["file"]
                     break
                 cut = None
@@ -283,11 +359,14 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> List[str]:
     return lines
 
 
-def _paste_item(canvas: Image.Image, img: Image.Image, is_cut: bool, cx: int, top: int, box_w: int, box_h: int):
+def _paste_item(canvas: Image.Image, img: Image.Image, is_cut: bool, cx: int, top: int, box_w: int, box_h: int,
+                shadow: bool = True):
     item = _fit(img, box_w, box_h)
     x = cx - item.width // 2
     y = top + (box_h - item.height)  # sit on a common baseline
-    if is_cut:
+    if is_cut and not shadow:  # hand-held objects don't stand on the ground
+        canvas.alpha_composite(item.convert("RGBA"), (x, top + (box_h - item.height) // 2))
+    elif is_cut:
         # Soft contact shadow beneath the vehicle
         sh = Image.new("L", (item.width, max(8, item.height // 9)), 0)
         ImageDraw.Draw(sh).ellipse((item.width * 0.06, 0, item.width * 0.94, sh.height), fill=90)
@@ -423,6 +502,8 @@ def photo_credits(pairs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
                 "author": artist[:80],
                 "license": (meta.get("LicenseShortName") or {}).get("value", "see file page"),
                 "url": ((pg.get("imageinfo") or [{}])[0]).get("descriptionurl") or f"https://commons.wikimedia.org/wiki/{f.replace(' ', '_')}",
+                # Short stable link to the file page (the full URL of a Korean/accented file name is huge)
+                "short_url": f"https://commons.wikimedia.org/?curid={pg['pageid']}" if pg.get("pageid") else "",
             })
     # Anything the batches missed (throttling, long continuations): ask one file at a time
     for c in credits:
@@ -439,6 +520,8 @@ def photo_credits(pairs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
                     if meta:
                         c["author"] = re.sub(r"<[^>]+>", "", (meta.get("Artist") or {}).get("value", "")).strip()[:80] or c["author"]
                         c["license"] = (meta.get("LicenseShortName") or {}).get("value", c["license"])
+                    if pg.get("pageid"):
+                        c["short_url"] = f"https://commons.wikimedia.org/?curid={pg['pageid']}"
                     break
                 time.sleep(5 * (attempt + 1))
             except (requests.RequestException, ValueError):
@@ -468,4 +551,45 @@ def make_poster(prompt_text: str, topic: str, out_path: Path, cache_dir: Path) -
         {"historical": f"{display_name(p['historical'])} ({p['historical']['year']})",
          "modern": f"{display_name(p['modern'])} ({p['modern']['year']})", "label": p["label"], "kind": p["kind"]}
         for p in spec["pairs"]], "sources": spec["sources"], "list_page": spec["list_page"], "credits": credits}
+
+
+# ------------------------------------------------------------------ YouTube description helpers
+
+_NO_ATTRIBUTION = re.compile(r"public domain|^pd\b|cc0|no restrictions", re.I)
+
+
+def compact_credits(credits: List[Dict[str, str]]) -> List[str]:
+    """One short line per photo whose licence REQUIRES attribution (CC BY / BY-SA / OGL ...):
+    'Puma – Boevaya mashina, CC BY-SA 4.0 – https://commons.wikimedia.org/?curid=123'.
+    Public-domain / CC0 photos need no credit and are left out."""
+    lines, seen = [], set()
+    for c in credits:
+        lic = str(c.get("license") or "")
+        if _NO_ATTRIBUTION.search(lic):
+            continue
+        link = c.get("short_url") or c.get("url") or ""
+        if link in seen:
+            continue
+        seen.add(link)
+        author = re.sub(r"\s+", " ", str(c.get("author") or "Unknown")).strip()
+        # Keep the readable part of bilingual credits ("대한민국 국군 Republic of Korea Armed Forces")
+        latin = re.findall(r"[A-Za-z][A-Za-z .,'()&-]+", author)
+        if latin and len(" ".join(latin)) >= 6 and not re.match(r"[A-Za-z]", author):
+            author = " ".join(latin).strip()
+        lines.append(f"• {c.get('model')} – {author[:50]}, {lic} – {link}")
+    return lines
+
+
+def description_body(record: Dict[str, Any]) -> Optional[str]:
+    """Description text made only of the poster's real content (ranked items or verified pairs)."""
+    if record.get("ranked_items"):
+        rows = []
+        for it in record["ranked_items"]:
+            spec = ", ".join(x for x in (it.get("gun"), it.get("troops")) if x) or ", ".join(it.get("bullets") or [])
+            yr = f", {it['year']}" if it.get("year") else ""
+            rows.append(f"{it['rank']}. {it['name']} ({it['country']}{yr})" + (f" – {spec}" if spec else ""))
+        return "\n".join(rows)
+    if record.get("evolution_pairs"):
+        return "\n".join(f"{p['historical']} → {p['modern']} – {p['label']}" for p in record["evolution_pairs"])
+    return None
 

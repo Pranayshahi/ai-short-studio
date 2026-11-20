@@ -15,14 +15,23 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL = os.getenv("SCRIPT_WRITER_MODEL", "qwen2.5:7b")
-ENABLED = os.getenv("SCRIPT_WRITER", "auto").lower()  # auto | llm | template
-WORDS_PER_SECOND = 135.0 / 60.0
+ENABLED = os.getenv("SCRIPT_WRITER", "auto").lower()  # auto | llm | template (import-time default)
+
+
+def _mode() -> str:
+    """Read on every call: a value cached at import time stuck at 'template' if the QA suite
+    (which switches it off temporarily) happened to import this module first."""
+    return os.getenv("SCRIPT_WRITER", "auto").lower()
+# Word budget at the narrator's NATURAL pace. Kokoro (am_michael at 1.15) speaks ~1.85 words/s; a
+# 135-wpm (2.25 w/s) budget overshot every time and forced a +27-30% rushed re-voice.
+WORDS_PER_SECOND = (2.0 if os.getenv("TTS_ENGINE", "kokoro").lower() == "kokoro" else 135.0 / 60.0)
 
 _NUM = re.compile(r"\d+(?:[.,]\d+)?")
 
@@ -108,12 +117,26 @@ def _label_supported(label: str, fact_texts: List[str]) -> bool:
 
 
 def is_available() -> bool:
-    if ENABLED == "template":
+    if _mode() == "template":
         return False
     try:
         with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=3) as r:
             models = [m.get("name", "") for m in json.loads(r.read()).get("models", [])]
         return any(m == MODEL or m.startswith(MODEL.split(":")[0]) for m in models)
+    except Exception:
+        return False
+
+
+def can_run() -> bool:
+    """True if the LLM scriptwriter can be used: Ollama is already serving the model, or it is
+    installed locally and can be started on demand by resources.lease("ollama")."""
+    if _mode() == "template":
+        return False
+    if is_available():
+        return True
+    try:
+        from app.automation import resources
+        return Path(resources.SERVICES["ollama"]["start"][0]).exists()
     except Exception:
         return False
 
@@ -186,7 +209,7 @@ def write_brief(subject: str, facts: List[Dict[str, str]], duration: float) -> O
     Returns a validated brief, or None (caller falls back to the template script).
     """
     facts = [f for f in facts if f.get("text") and len(f["text"].split()) >= 5][:14]
-    if len(facts) < 3 or not is_available():
+    if len(facts) < 3 or not can_run():
         return None
     target_words = int(duration * WORDS_PER_SECOND)
     # Qwen 7B edits facts into ~10-word lines; hook + closing add ~14 words
@@ -198,7 +221,13 @@ def write_brief(subject: str, facts: List[Dict[str, str]], duration: float) -> O
     all_text = [f["text"] for f in facts]
     proper = {w.lower() for f in all_text for w in re.findall(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z]{2,})", f)}
     try:
+        # lease() starts Ollama when it isn't running (it used to be checked BEFORE starting, so a
+        # stopped Ollama always meant the template script) and stops it afterwards if it started it.
         with resources.lease("ollama"):
+            if not is_available():
+                print(f"[script-writer] Ollama is up but model {MODEL} is missing; using template")
+                return None
+
             def edit_lines(batch):
                 out = _ollama(
                     f"Edit each FACT into ONE spoken voiceover line for a YouTube Short about {subject}. "

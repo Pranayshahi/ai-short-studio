@@ -107,9 +107,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnRerenderModal')?.addEventListener('click', handleRerenderModal);
   const btnRegenWx = document.getElementById('btnRegenWeaponXModal');
   if (btnRegenWx) btnRegenWx.addEventListener('click', handleRegenerateWeaponXModal);
-  document.getElementById('btnModalPublish')?.addEventListener('click', publishActiveProject);
+  document.getElementById('btnModalPublish')?.addEventListener('click', () => publishActiveProject(false));
   const btnApprove = document.getElementById('btnModalApproveLive');
-  if (btnApprove) btnApprove.addEventListener('click', approveActiveProjectLive);
+  if (btnApprove) btnApprove.addEventListener('click', () => approveActiveProjectLive(false));
   document.getElementById('btnModalDelete')?.addEventListener('click', () => {
     if (activeProject) deleteVideo(activeProject.id);
   });
@@ -202,6 +202,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('videoModal')?.addEventListener('click', (e) => {
     if (e.target.id === 'videoModal') closeModal();
   });
+
+  // Load AI & Saved Music tracks into all track selectors (#musicTrackSelect & #carMotionPhonkSelect)
+  loadMusicTracks();
 });
 
 async function loadStudioSettings() {
@@ -291,14 +294,15 @@ async function handleUploadYoutubeSecrets(e) {
   }
 }
 
-async function handleTriggerYoutubeOAuth() {
+async function handleTriggerYoutubeOAuth(channelOverride) {
+  const chInfo = resolveTargetYoutubeChannel(activeProject, channelOverride);
   const statusEl = document.getElementById('settingsStatusText');
-  if (statusEl) statusEl.textContent = 'Launching Google OAuth browser sign-in... Complete sign-in in your browser window.';
+  if (statusEl) statusEl.textContent = `Launching Google OAuth browser sign-in for ${chInfo.handle} (${chInfo.id})...`;
   try {
-    const res = await fetch('/api/settings/youtube-auth', { method: 'POST' });
+    const res = await fetch(`/api/settings/youtube-auth?channel=${encodeURIComponent(chInfo.key)}`, { method: 'POST' });
     const data = await res.json();
     if (res.ok) {
-      if (statusEl) statusEl.textContent = '✓ YouTube OAuth Connected! Channel UC4KV67NYzLi8JlrfB9J4hGg is ready for direct API uploads.';
+      if (statusEl) statusEl.textContent = `✓ YouTube OAuth Connected! Channel ${chInfo.id} (${chInfo.handle}) is ready for private API uploads.`;
       loadStudioSettings();
     } else {
       alert(data.detail || 'Please upload client_secrets.json first.');
@@ -337,7 +341,9 @@ function renderGrid(projects) {
     const isInProgress = p.status === 'in_progress';
     const isFailed = p.status === 'failed';
     const isPendingApproval = p.status === 'pending_approval' || (p.youtube && p.youtube.approval_status === 'pending_approval');
-    const isPub = p.status === 'published' || (p.youtube && p.youtube.approval_status === 'approved_live');
+    // The app never makes videos public: 'published' (old records) and 'uploaded_private' both mean
+    // "uploaded, private on YouTube"
+    const isPub = p.status === 'published' || p.status === 'uploaded_private';
     const duration = p.duration ? `${Math.round(p.duration)}s` : (isInProgress ? '...' : '25s');
     const thumbUrl = `/api/thumbnail/${p.id}?t=${Date.now()}`;
     
@@ -356,15 +362,22 @@ function renderGrid(projects) {
       qaClass = (qa.status === 'FAILED') ? 'failed' : '';
     }
 
+    const needsAttention = p.status === 'needs_attention';
+    const openFb = (p.feedback || []).filter(f => f.status === 'open').length;
     let pubPill = '';
-    if (isInProgress) {
+    if (needsAttention) {
+      const why = (p.problems || []).map(x => '• ' + x).join('\n') || 'A quality check failed';
+      pubPill = `<span class="pub-pill" title="${escapeHtml(why)}" style="background: rgba(245,158,11,0.18); color: #fbbf24; border: 1px solid rgba(245,158,11,0.5);">⚠️ Needs attention</span>`;
+    } else if (isInProgress) {
       pubPill = `<span class="pub-pill" style="background: rgba(0,229,255,0.15); color: #00e5ff; border: 1px solid rgba(0,229,255,0.3);">⚡ In Progress</span>`;
     } else if (isFailed) {
       pubPill = `<span class="pub-pill" style="background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3);">✕ Failed</span>`;
+    } else if (p.status === 'approved_private' || (p.youtube && p.youtube.approval_status === 'approved_private')) {
+      pubPill = `<span class="pub-pill" style="background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.4);">🔒 Approved · Private on YouTube</span>`;
     } else if (isPendingApproval) {
       pubPill = `<span class="pub-pill" style="background: rgba(245,158,11,0.18); color: #fbbf24; border: 1px solid rgba(245,158,11,0.4);">⏳ Saved · Awaiting Approval</span>`;
     } else {
-      pubPill = `<span class="pub-pill ${isPub ? 'published' : 'ready'}">${isPub ? '✓ Live on YouTube' : '● Ready to Publish'}</span>`;
+      pubPill = `<span class="pub-pill ${isPub ? 'published' : 'ready'}">${isPub ? '🔒 Uploaded · Private on YouTube' : '● Ready to Upload'}</span>`;
     }
 
     const clickAction = isInProgress
@@ -375,6 +388,7 @@ function renderGrid(projects) {
       <div class="short-card" data-project-id="${p.id}" onclick="${clickAction}">
         <div class="card-thumbnail-wrapper">
           <div class="card-top-actions">
+            ${!isInProgress ? `<button class="card-fb-btn" title="Feedback: tell Auto-fix what's wrong with this video" onclick="event.stopPropagation(); openFeedbackPanel('${p.id}')">💬${openFb ? `<span class="card-fb-count">${openFb}</span>` : ''}</button>` : ''}
             <button class="card-del-btn" title="Delete Video" onclick="event.stopPropagation(); deleteVideo('${p.id}')">✕</button>
           </div>
           ${isInProgress ? `
@@ -398,6 +412,18 @@ function renderGrid(projects) {
             ${p.style === 'openmontage' ? '<span class="badge-openmontage">🎬 OpenMontage</span>' : (p.style === 'weaponx' ? '<span class="badge-openmontage" style="background: rgba(255,69,0,0.18); border-color: rgba(255,69,0,0.5); color: #ff8c00;">🔥 WeaponX</span>' : '')}
             ${pubPill}
           </div>
+          ${openFb && !needsAttention && !isInProgress ? `
+            <div style="margin-top: 8px; padding: 8px; border-radius: 6px; background: rgba(0,229,255,0.08); border: 1px solid rgba(0,229,255,0.3); font-size: 11px; color: #67e8f9;">
+              💬 ${openFb} feedback note${openFb > 1 ? 's' : ''} waiting
+              <button class="btn btn-primary btn-xs" id="autoFixBtn_${p.id}" style="margin-left: 6px; font-size: 11px; padding: 4px 8px;" onclick="event.stopPropagation(); autoRepairProject('${p.id}')">🔧 Auto-fix &amp; re-check</button>
+            </div>
+          ` : ''}
+          ${needsAttention ? `
+            <div class="needs-attention-box" style="margin-top: 8px; padding: 8px; border-radius: 6px; background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.35); font-size: 11px; color: #fcd34d; line-height: 1.4;">
+              ${(p.problems || []).slice(0, 3).map(x => `<div>• ${escapeHtml(String(x).slice(0, 140))}</div>`).join('')}
+              <button class="btn btn-primary btn-xs" id="autoFixBtn_${p.id}" style="margin-top: 6px; font-size: 11px; padding: 5px 10px;" onclick="event.stopPropagation(); autoRepairProject('${p.id}')">🔧 Auto-fix &amp; re-check</button>
+            </div>
+          ` : ''}
           ${!isInProgress && !isFailed ? `
             <div style="display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap;">
               <button class="btn btn-secondary btn-xs" style="flex: 1; padding: 6px 8px; font-size: 11px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; gap: 3px;" onclick="event.stopPropagation(); openStudioModal(1, '${p.id}')">🎨 Studio</button>
@@ -691,6 +717,7 @@ function renderModalScenes() {
     const sceneImgUrl = `/api/scene_image/${activeProject.id}/${s.scene_number}?t=${Date.now()}`;
     const hasClip = Boolean(s.clip_path);
     const clipBadge = hasClip ? `<span class="source-pill clip" title="${escapeHtml(s.clip_name || 'Video clip')}">🎬 Video Clip</span>` : '';
+    const fxBadge = sceneEffectsBadge(s);
     const thumbHtml = hasClip
       ? `<video src="/api/scene_clip/${activeProject.id}/${s.scene_number}?t=${Date.now()}" id="sceneThumbImg_${s.scene_number}" class="scene-thumb-preview" muted loop autoplay playsinline poster="${sceneImgUrl}"></video>`
       : `<img src="${sceneImgUrl}" id="sceneThumbImg_${s.scene_number}" class="scene-thumb-preview" onerror="this.style.opacity='0.2'" alt="Scene ${s.scene_number}">`;
@@ -703,6 +730,7 @@ function renderModalScenes() {
             <strong class="scene-number-title">Scene ${s.scene_number}</strong>
             ${sourceBadge}
             ${clipBadge}
+            ${fxBadge}
           </div>
           <!-- Line 2: Dedicated Action Controls -->
           <div class="scene-image-controls">
@@ -719,6 +747,7 @@ function renderModalScenes() {
               🎬 ${hasClip ? 'Replace Clip' : 'Add Clip'}
             </button>
             ${hasClip ? `<button class="btn btn-secondary btn-xs" onclick="removeSceneClip('${activeProject.id}', ${s.scene_number})" title="Remove the video clip and go back to the image">✕ Remove Clip</button>` : ''}
+            <button class="btn btn-secondary btn-xs" onclick="openSceneEffectsModal(${s.scene_number})" title="Camera motion (zoom, pan, focus) and filters for Scene ${s.scene_number}">🎞 Motion & Effects</button>
             <button class="btn btn-secondary btn-xs" onclick="openAddScenePanel(${s.scene_number + 1})" title="Insert a new scene right after Scene ${s.scene_number}">➕ Insert After</button>
             ${(activeProject.scenes || []).length > 1 ? `<button class="btn btn-secondary btn-xs scene-remove-btn" onclick="removeScene('${activeProject.id}', ${s.scene_number})" title="Delete Scene ${s.scene_number} and its image/clip">🗑 Remove Scene</button>` : ''}
             <input type="file" id="sceneFileInput_${s.scene_number}" accept="image/*" style="display:none;" onchange="handleSceneFileSelected('${activeProject.id}', ${s.scene_number}, this)">
@@ -877,10 +906,42 @@ async function removeScene(projectId, sceneIdx) {
   }
 }
 
+let currentMainWorkspaceTab = 'weapon';
+
+function resolveTargetYoutubeChannel(project, channelOverride) {
+  const isCar = (
+    channelOverride === 'autoflashx' ||
+    currentMainWorkspaceTab === 'car' ||
+    project?.channel === 'autoflashx' ||
+    project?.is_car_edit ||
+    project?.style === 'car_edit'
+  );
+  if (isCar) {
+    return {
+      key: 'autoflashx',
+      id: 'UCuJ9LcSqliLH0VEJ9lWZsrQ',
+      handle: '@AutoFlashX',
+      studioUrl: 'https://studio.youtube.com/channel/UCuJ9LcSqliLH0VEJ9lWZsrQ'
+    };
+  }
+  return {
+    key: 'weaponxlabs',
+    id: 'UC4KV67NYzLi8JlrfB9J4hGg',
+    handle: '@WeaponXLabs',
+    studioUrl: 'https://studio.youtube.com/channel/UC4KV67NYzLi8JlrfB9J4hGg'
+  };
+}
+
 function renderModalPublishState(project) {
   const pubStatus = document.getElementById('publishResult');
   const btnApprove = document.getElementById('btnModalApproveLive');
   const btnPublish = document.getElementById('btnModalPublish');
+  const chLink = document.getElementById('modalYtStudioChannelLink');
+  const chInfo = resolveTargetYoutubeChannel(project);
+  if (chLink) {
+    chLink.href = chInfo.studioUrl;
+    chLink.textContent = `Open Channel ${chInfo.id} (${chInfo.handle}) ↗`;
+  }
   if (!pubStatus) return;
 
   pubStatus.classList.add('hidden');
@@ -890,49 +951,66 @@ function renderModalPublishState(project) {
     const yt = project.youtube;
     const isRealApi = yt.mode === 'youtube_api';
     const isLive = Boolean(yt.live && yt.approval_status === 'approved_live');
-    const studioUrl = yt.studio_edit_url || yt.studio_channel_url || 'https://studio.youtube.com/channel/UC4KV67NYzLi8JlrfB9J4hGg';
+    const studioUrl = chInfo.studioUrl || yt.studio_edit_url || yt.studio_channel_url;
+    const editUrl = (currentMainWorkspaceTab === 'car' && yt.channel_id !== chInfo.id)
+      ? chInfo.studioUrl
+      : (yt.studio_edit_url || studioUrl);
 
-    if (isRealApi && isLive) {
+    if (yt.approval_status === 'approved_private') {
       pubStatus.className = 'publish-status success';
       pubStatus.innerHTML = `
         <div style="line-height: 1.5;">
-          <strong>✅ Approved & LIVE on YouTube Shorts (@WeaponXLabs):</strong><br>
+          <strong>🔒 Approved and saved as PRIVATE on YouTube (${chInfo.handle} · ${chInfo.id})</strong><br>
+          <span>It will not go public by itself. Open it in YouTube Studio to <strong>make it public</strong> or <strong>schedule</strong> it:</span><br>
+          <a href="${chInfo.studioUrl}" target="_blank" style="color: #00e5ff; font-weight: 600;">${chInfo.studioUrl} ↗</a>
+          ${editUrl && editUrl !== chInfo.studioUrl ? ` · <a href="${editUrl}" target="_blank" style="color: #10b981; font-weight: 600;">Edit Video ↗</a>` : ''}
+        </div>
+      `;
+      pubStatus.classList.remove('hidden');
+      if (btnApprove) btnApprove.classList.add('hidden');
+      if (btnPublish) btnPublish.textContent = `💾 Update YouTube Fields (${chInfo.id} · stays Private)`;
+    } else if (isRealApi && isLive) {
+      pubStatus.className = 'publish-status success';
+      pubStatus.innerHTML = `
+        <div style="line-height: 1.5;">
+          <strong>✅ Approved & LIVE on YouTube Shorts (${chInfo.handle}):</strong><br>
           <a href="${yt.url}" target="_blank" style="color: #00e5ff; font-weight: bold;">${yt.url}</a>
-          · <a href="${studioUrl}" target="_blank" style="color: #10b981; font-weight: 600;">Open in YouTube Studio ↗</a>
+          · <a href="${chInfo.studioUrl}" target="_blank" style="color: #10b981; font-weight: 600;">Open ${chInfo.studioUrl} ↗</a>
         </div>
       `;
       pubStatus.classList.remove('hidden');
       if (btnPublish) btnPublish.textContent = '🚀 Re-Upload / Update on YouTube Shorts';
-    } else if (isRealApi && yt.approval_status === 'pending_approval') {
+    } else if ((isRealApi || yt.mode === 'studio_staged') && yt.approval_status === 'pending_approval') {
       pubStatus.className = 'publish-status success';
       pubStatus.innerHTML = `
         <div style="line-height: 1.5;">
-          <strong>⏳ Saved to Channel UC4KV67NYzLi8JlrfB9J4hGg (Private Draft on YouTube)</strong><br>
-          <span>Review in Studio: <a href="${studioUrl}" target="_blank" style="color: #00e5ff; font-weight: 600;">${studioUrl}</a></span><br>
-          <span style="color: #fbbf24;">Click <strong>"✅ Approve & Go Live Now"</strong> above when you are ready for it to go public!</span>
+          <strong>⏳ Saved to Channel ${chInfo.id} (${chInfo.handle} · Private Draft on YouTube)</strong><br>
+          <span>Review in Studio: <a href="${chInfo.studioUrl}" target="_blank" style="color: #00e5ff; font-weight: 600;">${chInfo.studioUrl} ↗</a></span><br>
+          <span style="color: #fbbf24;">Click <strong>"✅ Approve (stays Private)"</strong> when it's ready. It stays private on <a href="${chInfo.studioUrl}" target="_blank" style="color: #38bdf8;">${chInfo.studioUrl}</a>.</span>
         </div>
       `;
       pubStatus.classList.remove('hidden');
       if (btnApprove) btnApprove.classList.remove('hidden');
-      if (btnPublish) btnPublish.textContent = '💾 Update YouTube Draft Fields';
+      if (btnPublish) btnPublish.textContent = `💾 Update YouTube Draft Fields (${chInfo.id})`;
     } else {
       // Staged local draft or missing/expired OAuth
       pubStatus.className = 'publish-status error';
       pubStatus.innerHTML = `
         <div style="line-height: 1.5;">
-          <strong style="color: #f87171;">⚠️ Not Uploaded to YouTube (Local Staged Draft Only)</strong><br>
-          <span style="font-size: 11.5px; color: #cbd5e1;">Your YouTube OAuth authorization expired or was not completed. Re-authenticate to upload directly to YouTube Studio.</span><br>
-          <button type="button" class="btn btn-primary btn-xs" onclick="handleTriggerYoutubeOAuth()" style="margin-top: 8px; font-weight: 700;">
-            🔑 Connect / Re-Authenticate YouTube
+          <strong style="color: #f87171;">⚠️ Not Uploaded to YouTube (${chInfo.handle} · ${chInfo.id})</strong><br>
+          <span style="font-size: 11.5px; color: #cbd5e1;">Your YouTube OAuth authorization for ${chInfo.handle} (${chInfo.id}) expired or was not completed.</span><br>
+          <button type="button" class="btn btn-primary btn-xs" onclick="handleTriggerYoutubeOAuth('${chInfo.key}')" style="margin-top: 8px; font-weight: 700;">
+            🔑 Connect / Re-Authenticate YouTube (${chInfo.handle})
           </button>
+          · <a href="${chInfo.studioUrl}" target="_blank" style="color: #00e5ff; font-size: 11.5px; font-weight: 600;">Open ${chInfo.studioUrl} ↗</a>
         </div>
       `;
       pubStatus.classList.remove('hidden');
       if (btnApprove) btnApprove.classList.add('hidden');
-      if (btnPublish) btnPublish.textContent = '🚀 Upload to YouTube Shorts (Save & Fill All Fields)';
+      if (btnPublish) btnPublish.textContent = `🚀 Upload to YouTube Shorts (${chInfo.id} · Private)`;
     }
   } else {
-    if (btnPublish) btnPublish.textContent = '🚀 Upload to YouTube Shorts (Save & Fill All Fields)';
+    if (btnPublish) btnPublish.textContent = `🚀 Upload to YouTube Shorts (${chInfo.id} · Private)`;
   }
 }
 
@@ -1104,9 +1182,10 @@ async function handleSceneModalFileSelected(inputEl) {
     });
 
     if (res.ok) {
+      const upData = await res.json().catch(() => ({}));
       if (statusEl) {
-        statusEl.style.color = '#10b981';
-        statusEl.textContent = '✓ Image uploaded successfully!';
+        statusEl.style.color = upData.warning ? '#fbbf24' : '#10b981';
+        statusEl.textContent = upData.warning ? `⚠️ ${upData.warning}` : '✓ Image uploaded successfully!';
       }
       const thumb = document.getElementById(`sceneThumbImg_${sceneIdx}`);
       if (thumb) {
@@ -1459,8 +1538,8 @@ async function handleSceneFileSelected(projectId, sceneIdx, inputEl) {
         thumb.style.opacity = '1.0';
       }
       if (statusEl) {
-        statusEl.textContent = 'Image updated ✓ (click Re-render to apply)';
-        setTimeout(() => { statusEl.textContent = ''; }, 4000);
+        statusEl.textContent = data.warning ? `⚠️ ${data.warning}` : 'Image updated ✓ (click Re-render to apply)';
+        setTimeout(() => { statusEl.textContent = ''; }, data.warning ? 12000 : 4000);
       }
     } else {
       alert('Failed to upload image. Please try another file.');
@@ -1500,6 +1579,8 @@ async function saveSceneText(projectId, sceneIdx) {
       if (activeProject && activeProject.scenes && activeProject.scenes[sceneIdx - 1]) {
         activeProject.scenes[sceneIdx - 1].narration = narration;
       }
+      // Saved text is no longer "unsaved" for the UI-update reload guard
+      textInput.defaultValue = textInput.value;
     } else {
       alert('Failed to save scene text');
       if (statusEl) statusEl.textContent = 'Save failed';
@@ -1722,9 +1803,11 @@ async function handleRegenerateWeaponXModal() {
   }
 }
 
-async function publishActiveProject() {
+async function publishActiveProject(overrideQa = false) {
+  overrideQa = overrideQa === true;
   if (!activeProject) return;
 
+  const chInfo = resolveTargetYoutubeChannel(activeProject);
   const btn = document.getElementById('btnModalPublish');
   const statusDiv = document.getElementById('publishResult');
   const titleVal = document.getElementById('modalYtTitleInput')?.value?.trim() || activeProject.title;
@@ -1733,7 +1816,7 @@ async function publishActiveProject() {
   const tagsList = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
 
   btn.disabled = true;
-  btn.textContent = '⏳ Uploading & Saving to UC4KV67NYzLi8JlrfB9J4hGg...';
+  btn.textContent = `⏳ Uploading & Saving (Private) to ${chInfo.id} (${chInfo.handle})...`;
   statusDiv.classList.add('hidden');
 
   try {
@@ -1747,12 +1830,16 @@ async function publishActiveProject() {
         description: descVal,
         tags: tagsList,
         category_id: '28',
-        made_for_kids: false
+        made_for_kids: false,
+        channel: chInfo.key,
+        override_qa: overrideQa
       })
     });
     const data = await res.json();
 
-    if (res.ok) {
+    if (showQaBlocked(res, data, statusDiv, 'publishActiveProject', 'Upload anyway (Private)')) {
+      btn.textContent = `🚀 Upload to YouTube Shorts (${chInfo.id} · Private)`;
+    } else if (res.ok) {
       activeProject = data.project || activeProject;
       activeProject.youtube = data.youtube;
       renderModalPublishState(activeProject);
@@ -1761,28 +1848,31 @@ async function publishActiveProject() {
       statusDiv.className = 'publish-status error';
       statusDiv.innerHTML = `
         <div style="line-height: 1.5;">
-          <strong>⚠️ Upload Failed:</strong> ${escapeHtml(data.detail || 'Check credentials')}<br>
-          <button type="button" class="btn btn-primary btn-xs" onclick="handleTriggerYoutubeOAuth()" style="margin-top: 8px; font-weight: 700;">
-            🔑 Connect / Re-Authenticate YouTube
+          <strong>⚠️ Upload Failed (${chInfo.handle} · ${chInfo.id}):</strong> ${escapeHtml(data.detail || 'Check credentials')}<br>
+          <button type="button" class="btn btn-primary btn-xs" onclick="handleTriggerYoutubeOAuth('${chInfo.key}')" style="margin-top: 8px; font-weight: 700;">
+            🔑 Connect / Re-Authenticate YouTube (${chInfo.handle})
           </button>
+          · <a href="${chInfo.studioUrl}" target="_blank" style="color: #00e5ff; font-weight: 600;">Open ${chInfo.studioUrl} ↗</a>
         </div>
       `;
       statusDiv.classList.remove('hidden');
-      btn.textContent = '🚀 Upload to YouTube Shorts (Save & Fill All Fields)';
+      btn.textContent = `🚀 Upload to YouTube Shorts (${chInfo.id} · Private)`;
     }
   } catch (err) {
     statusDiv.className = 'publish-status error';
     statusDiv.textContent = `Error: ${err.message}`;
     statusDiv.classList.remove('hidden');
-    btn.textContent = '🚀 Upload to YouTube Shorts (Save & Fill All Fields)';
+    btn.textContent = `🚀 Upload to YouTube Shorts (${chInfo.id} · Private)`;
   } finally {
     btn.disabled = false;
   }
 }
 
-async function approveActiveProjectLive() {
+async function approveActiveProjectLive(overrideQa = false) {
+  overrideQa = overrideQa === true;
   if (!activeProject) return;
 
+  const chInfo = resolveTargetYoutubeChannel(activeProject);
   const btnApprove = document.getElementById('btnModalApproveLive');
   const statusDiv = document.getElementById('publishResult');
   const titleVal = document.getElementById('modalYtTitleInput')?.value?.trim() || activeProject.title;
@@ -1792,7 +1882,7 @@ async function approveActiveProjectLive() {
 
   if (btnApprove) {
     btnApprove.disabled = true;
-    btnApprove.textContent = '🚀 Going LIVE on Channel UC4KV67NYzLi8JlrfB9J4hGg...';
+    btnApprove.textContent = `⏳ Approving (stays Private on ${chInfo.id})...`;
   }
 
   try {
@@ -1802,12 +1892,16 @@ async function approveActiveProjectLive() {
       body: JSON.stringify({
         title: titleVal,
         description: descVal,
-        tags: tagsList
+        tags: tagsList,
+        channel: chInfo.key,
+        override_qa: overrideQa
       })
     });
     const data = await res.json();
 
-    if (res.ok) {
+    if (showQaBlocked(res, data, statusDiv, 'approveActiveProjectLive', 'Approve anyway (stays Private)')) {
+      // reasons shown; nothing was sent to YouTube
+    } else if (res.ok) {
       activeProject = data.project || activeProject;
       activeProject.youtube = data.youtube;
       renderModalPublishState(activeProject);
@@ -1816,10 +1910,11 @@ async function approveActiveProjectLive() {
       statusDiv.className = 'publish-status error';
       statusDiv.innerHTML = `
         <div style="line-height: 1.5;">
-          <strong>⚠️ Approval Failed:</strong> ${escapeHtml(data.detail || 'Error going live')}<br>
-          <button type="button" class="btn btn-primary btn-xs" onclick="handleTriggerYoutubeOAuth()" style="margin-top: 8px; font-weight: 700;">
-            🔑 Connect / Re-Authenticate YouTube
+          <strong>⚠️ Approval Failed (${chInfo.handle} · ${chInfo.id}):</strong> ${escapeHtml(data.detail || 'Could not update the video on YouTube')}<br>
+          <button type="button" class="btn btn-primary btn-xs" onclick="handleTriggerYoutubeOAuth('${chInfo.key}')" style="margin-top: 8px; font-weight: 700;">
+            🔑 Connect / Re-Authenticate YouTube (${chInfo.handle})
           </button>
+          · <a href="${chInfo.studioUrl}" target="_blank" style="color: #00e5ff; font-weight: 600;">Open ${chInfo.studioUrl} ↗</a>
         </div>
       `;
       statusDiv.classList.remove('hidden');
@@ -1831,9 +1926,132 @@ async function approveActiveProjectLive() {
   } finally {
     if (btnApprove) {
       btnApprove.disabled = false;
-      btnApprove.textContent = '✅ Approve & Go Live Now';
+      btnApprove.textContent = '✅ Approve (stays Private)';
     }
   }
+}
+
+// ---- Per-video feedback: notes in plain words that Auto-fix turns into fixes -----------------
+function _fbStatusBadge(f) {
+  const map = {
+    open: ['#67e8f9', '⏳ waiting for Auto-fix'],
+    fixed: ['#34d399', '✓ fixed'],
+    partly_fixed: ['#fbbf24', '◐ partly fixed'],
+    needs_you: ['#f87171', '✋ needs you'],
+  };
+  const [c, label] = map[f.status] || ['#94a3b8', f.status];
+  return `<span style="color:${c}; font-weight:700;">${label}</span>`;
+}
+
+async function openFeedbackPanel(projectId) {
+  let modal = document.getElementById('feedbackModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'feedbackModal';
+    modal.className = 'fb-modal-backdrop';
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `<div class="fb-modal"><div style="color:#94a3b8;">Loading…</div></div>`;
+  const res = await fetch(`/api/projects/${projectId}/feedback`);
+  const data = await res.json().catch(() => ({ feedback: [] }));
+  const proj = (typeof currentProjects !== 'undefined' && Array.isArray(currentProjects) ? currentProjects : []).find(x => x.id === projectId) || {};
+  const items = (data.feedback || []).slice().reverse().map(f => `
+    <div class="fb-item">
+      <div style="display:flex; justify-content:space-between; gap:8px;">
+        <div style="flex:1; color:#e2e8f0;">${escapeHtml(f.text)}</div>
+        <button class="fb-del" title="Delete note" onclick="deleteFeedback('${projectId}', '${f.id}')">✕</button>
+      </div>
+      <div style="font-size:11px; margin-top:4px;">${_fbStatusBadge(f)}
+        ${f.result ? ` · <span style="color:#cbd5e1;">${escapeHtml(f.result)}</span>`
+          : (f.preview && f.preview.length ? ` · <span style="color:#94a3b8;">will do: ${escapeHtml(f.preview.join(', '))}</span>` : '')}
+      </div>
+    </div>`).join('') || '<div style="color:#64748b; font-size:12px;">No feedback yet.</div>';
+  modal.innerHTML = `
+    <div class="fb-modal" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <strong style="font-size:15px;">💬 Feedback · ${escapeHtml(proj.title || proj.topic || projectId)}</strong>
+        <button class="fb-del" onclick="document.getElementById('feedbackModal').remove()">✕</button>
+      </div>
+      <div style="font-size:12px; color:#94a3b8; margin-bottom:8px;">
+        Say what's wrong in plain words, e.g. <em>"scene 3 image is wrong"</em>, <em>"music is boring"</em>,
+        <em>"music too loud"</em>, <em>"voice too fast"</em>, <em>"scene 2 should say "…""</em>, <em>"remove scene 4"</em>,
+        <em>"title should be "…""</em>, <em>"captions out of sync"</em>.
+      </div>
+      <textarea id="fbText" rows="3" placeholder="What's wrong with this video?" style="width:100%; box-sizing:border-box; border-radius:8px; padding:8px; background:#0f172a; color:#e2e8f0; border:1px solid #334155;"></textarea>
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <button class="btn btn-secondary btn-xs" onclick="submitFeedback('${projectId}', false)">💾 Save note</button>
+        <button class="btn btn-primary btn-xs" onclick="submitFeedback('${projectId}', true)">🔧 Save &amp; Auto-fix now</button>
+        <span id="fbStatus" style="font-size:12px; color:#94a3b8; align-self:center;"></span>
+      </div>
+      <div style="margin-top:12px; max-height:260px; overflow:auto;">${items}</div>
+    </div>`;
+  document.getElementById('fbText')?.focus();
+}
+
+async function submitFeedback(projectId, fixNow) {
+  const text = (document.getElementById('fbText')?.value || '').trim();
+  const st = document.getElementById('fbStatus');
+  if (text) {
+    const res = await fetch(`/api/projects/${projectId}/feedback`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text })
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      if (st) st.textContent = `⚠️ ${typeof d.detail === 'string' ? d.detail : 'Could not save'}`;
+      return;
+    }
+  }
+  if (fixNow) {
+    if (st) st.textContent = '⏳ Fixing & re-checking (new images/music can take a few minutes)…';
+    await autoRepairProject(projectId);
+  }
+  await openFeedbackPanel(projectId);
+  loadProjects();
+}
+
+async function deleteFeedback(projectId, feedbackId) {
+  await fetch(`/api/projects/${projectId}/feedback/${feedbackId}`, { method: 'DELETE' });
+  await openFeedbackPanel(projectId);
+  loadProjects();
+}
+
+// Runs the same auto-repair the pipeline uses (new images for repeats, re-render, re-master,
+// clean metadata) and re-checks. The card then shows Completed or the remaining problems.
+async function autoRepairProject(projectId) {
+  const btn = document.getElementById(`autoFixBtn_${projectId}`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Fixing & re-checking...'; }
+  try {
+    const res = await fetch(`/api/projects/${projectId}/auto-repair`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && btn) {
+      btn.textContent = `⚠️ ${typeof data.detail === 'string' ? data.detail : 'Auto-fix failed'}`;
+    }
+  } catch (e) {
+    if (btn) btn.textContent = `⚠️ ${e.message}`;
+  } finally {
+    loadProjects();
+  }
+}
+
+// Upload/Approve are refused (409) while the video fails Verify-video. Lists the failed checks and
+// offers an explicit "... anyway" button that re-sends with override_qa. Returns true if handled.
+function showQaBlocked(res, data, statusDiv, retryFn, retryLabel) {
+  const d = data && data.detail;
+  if (res.status !== 409 || !d || !d.qa_blocked) return false;
+  const items = (d.reasons || []).map(r => `<li>${escapeHtml(r)}</li>`).join('');
+  statusDiv.className = 'publish-status error';
+  statusDiv.innerHTML = `
+    <div style="line-height: 1.5;">
+      <strong>🛡️ Quality check failed${d.score != null ? ` (${d.score}%)` : ''}: nothing was sent to YouTube.</strong>
+      <ul style="margin: 6px 0 6px 18px;">${items}</ul>
+      Fix these and re-render, or
+      <button type="button" class="btn btn-secondary btn-xs" onclick="${retryFn}(true)" style="margin-left: 4px; font-weight: 700;">
+        ${escapeHtml(retryLabel)}
+      </button>
+    </div>`;
+  statusDiv.classList.remove('hidden');
+  return true;
 }
 
 function escapeHtml(str) {
@@ -2362,7 +2580,8 @@ function initLayerStudioEvents() {
           drawLayerStudioCanvas();
           const sThumb = document.getElementById(`sceneThumbImg_${tVal}`);
           if (sThumb) sThumb.src = `/api/scene_image/${activeProject.id}/${tVal}?t=${Date.now()}`;
-          alert(`Image uploaded for Scene ${tVal} successfully!`);
+          const upData = await res.json().catch(() => ({}));
+          alert(upData.warning ? `Image uploaded for Scene ${tVal}.\n\n⚠️ ${upData.warning}` : `Image uploaded for Scene ${tVal} successfully!`);
         } else {
           alert('Failed to upload image.');
         }
@@ -4313,15 +4532,39 @@ const DEFAULT_CATEGORY_PROMPTS = {
   'Jazz': 'Warm walking bass, mellow electric piano chords, smooth late-night groove',
   'Pop': 'Upbeat punchy kick, bright synth plucks, catchy commercial summer groove',
   'Indian': 'Resonant sitar and tanpura modal drone, hypnotic tabla rhythm, mystical aura',
-  'Ambient': 'Spacious evolving synth pads, gentle celestial harmonics, deep calm drone'
+  'Ambient': 'Spacious evolving synth pads, gentle celestial harmonics, deep calm drone',
+  'Sleep Music': 'Slow ambient music and soft soundscapes for bedtime, warm dreamy lullaby pads, gentle celesta overtones, deep peaceful sleep',
+  'Flute Meditation': 'Soft bamboo flute and traditional instrumental music, peaceful Bansuri meditation melody, warm harmonic drone, gentle temple bells',
+  'Deep Relaxation': 'Atmospheric drones and gentle sound textures, deep relaxation ambient soundscape, weightless harmonic washes',
+  'Binaural Beats': 'Different frequencies played into each ear to create a perceived beat, stereo theta and alpha binaural entrainment waves with soft ambient pad',
+  'Raga Therapy': 'Selected ragas and instrumental performances for relaxation and emotional engagement, expressive Sitar and Bansuri alap over resonant Tanpura drone',
+  'Flute Healing': '528Hz Solfeggio healing flute melodies, emotional expressive breathy woodwind, singing crystal bowls, warm chakra aura pad',
+  'Japanese Music': 'Traditional Japanese Koto plucked strings, breathy Shakuhachi bamboo flute in Hirajoshi pentatonic scale, serene Kyoto Zen garden temple bells',
+  'Tibet Music': 'Resonant Tibetan bronze singing bowls, deep Himalayan temple gongs, overtone meditation drone, peaceful monastery sanctuary',
+  'Devotional': 'Sacred peaceful morning temple ambiance, warm harmonium reed chords, gentle Bansuri flute and Sitar melody, soft Manjira temple bells',
+  'Bhakti': 'Soulful Indian Bhakti bhajan and kirtan instrumental rhythm, warm Harmonium melody, rhythmic Tabla and Dholak Keherwa groove, Kartal chimes',
+  'Raining': 'Soothing natural rainfall patter, warm distant rolling thunder, delicate ambient felt-piano raindrop notes, cozy peaceful rain soundscape',
+  'Sea Waves': 'Rhythmic rolling ocean waves washing onto shore, gentle receding surf foam, warm sunset horizon ambient pads, serene coastal sea breeze',
+  'Andean Pan Flute': 'Original Highland Andean Pan Flute (Zampoña & Quena) soaring melodies inspired by classic pan-pipe ballads, warm acoustic guitar & charango arpeggios, deep Bombo legüero heartbeat drum, wide canyon echo'
 };
 
 function selectMusicCategory(catName, btnEl) {
   currentSelectedCategory = catName;
   document.querySelectorAll('#musicCategoryPills .btn-cat-pill').forEach(btn => {
     btn.classList.remove('active');
+    if (!btnEl && btn.textContent.toLowerCase().includes(catName.toLowerCase())) {
+      btn.classList.add('active');
+    }
   });
   if (btnEl) btnEl.classList.add('active');
+
+  document.querySelectorAll('#musicOnlyCardsGrid .music-only-option-card').forEach(card => {
+    if (card.dataset.category === catName) {
+      card.classList.add('active');
+    } else {
+      card.classList.remove('active');
+    }
+  });
 
   const promptInput = document.getElementById('customMusicPrompt');
   if (promptInput) {
@@ -4330,6 +4573,116 @@ function selectMusicCategory(catName, btnEl) {
     const isDefault = Object.values(DEFAULT_CATEGORY_PROMPTS).includes(curVal) || curVal === '';
     if (isDefault) {
       promptInput.value = DEFAULT_CATEGORY_PROMPTS[catName] || '';
+    }
+  }
+}
+
+function selectMusicOnlyOption(catName, mood, prompt, cardEl) {
+  currentSelectedCategory = catName;
+  document.querySelectorAll('#musicOnlyCardsGrid .music-only-option-card').forEach(card => {
+    card.classList.remove('active');
+  });
+  if (cardEl) {
+    cardEl.classList.add('active');
+  } else {
+    const foundCard = document.querySelector(`#musicOnlyCardsGrid .music-only-option-card[data-category="${catName}"]`);
+    if (foundCard) foundCard.classList.add('active');
+  }
+
+  document.querySelectorAll('#musicCategoryPills .btn-cat-pill').forEach(btn => {
+    btn.classList.remove('active');
+    if (btn.textContent.toLowerCase().includes(catName.toLowerCase())) {
+      btn.classList.add('active');
+    }
+  });
+
+  const moodRadio = document.querySelector(`input[name="musicMood"][value="${mood || 'Relaxing'}"]`);
+  if (moodRadio) moodRadio.checked = true;
+
+  const vocalRadio = document.querySelector('input[name="musicVocals"][value="Instrumental"]');
+  if (vocalRadio) vocalRadio.checked = true;
+
+  const promptInput = document.getElementById('customMusicPrompt');
+  if (promptInput) {
+    promptInput.value = prompt || DEFAULT_CATEGORY_PROMPTS[catName] || '';
+  }
+}
+
+function openMusicOnlyStudio(defaultCat = 'Sleep Music') {
+  openMusicModal();
+  switchMusicTab('create');
+  const defaultPrompt = DEFAULT_CATEGORY_PROMPTS[defaultCat] || DEFAULT_CATEGORY_PROMPTS['Sleep Music'];
+  selectMusicOnlyOption(defaultCat, 'Relaxing', defaultPrompt, null);
+  const panel = document.getElementById('musicOnlyOptionsPanel');
+  if (panel) {
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    panel.style.boxShadow = '0 0 24px rgba(56, 189, 248, 0.55)';
+    setTimeout(() => {
+      panel.style.boxShadow = '0 4px 18px rgba(0, 0, 0, 0.35)';
+    }, 1500);
+  }
+}
+
+async function quickRunMusicOnlyOption(catName, mood, withClips, btnEl) {
+  const cardEl = btnEl ? btnEl.closest('.music-only-option-card') : null;
+  const prompt = DEFAULT_CATEGORY_PROMPTS[catName] || '';
+  selectMusicOnlyOption(catName, mood || 'Relaxing', prompt, cardEl);
+  if (withClips) {
+    await triggerCreateMusicOnlyClips(false);
+  } else {
+    await triggerGenerateCustomMusic();
+  }
+}
+
+function getSelectedMusicDurationSeconds() {
+  const topSel = document.getElementById('musicOnlyDurationSelect');
+  if (topSel) {
+    if (topSel.value === 'custom') {
+      const mins = parseFloat(document.getElementById('customMusicMinutesInput')?.value || '10');
+      return Math.max(5, Math.min(3600, Math.round((isNaN(mins) ? 10 : mins) * 60)));
+    }
+    const v = parseFloat(topSel.value);
+    if (!isNaN(v) && v > 0) return v;
+  }
+  const radioVal = parseFloat(document.querySelector('input[name="musicDuration"]:checked')?.value || '60');
+  return isNaN(radioVal) ? 60 : radioVal;
+}
+
+function formatMusicDurationLabel(seconds) {
+  const sec = Math.round(Number(seconds) || 60);
+  if (sec >= 60) {
+    const mins = +(sec / 60).toFixed(1);
+    return `${mins} min (${sec}s)`;
+  }
+  return `${sec} seconds`;
+}
+
+function syncMusicDurationFromTop() {
+  const topSel = document.getElementById('musicOnlyDurationSelect');
+  const customWrap = document.getElementById('customMusicMinutesWrap');
+  if (!topSel) return;
+
+  if (topSel.value === 'custom') {
+    if (customWrap) customWrap.style.display = 'inline-flex';
+    return;
+  }
+  if (customWrap) customWrap.style.display = 'none';
+
+  const matchingRadio = document.querySelector(`input[name="musicDuration"][value="${topSel.value}"]`);
+  if (matchingRadio) {
+    matchingRadio.checked = true;
+  }
+}
+
+function syncMusicDurationFromRadio(radioEl) {
+  if (!radioEl) return;
+  const topSel = document.getElementById('musicOnlyDurationSelect');
+  const customWrap = document.getElementById('customMusicMinutesWrap');
+  if (topSel) {
+    const hasOpt = Array.from(topSel.options).some(o => o.value === String(radioEl.value));
+    if (hasOpt) {
+      topSel.value = String(radioEl.value);
+      if (customWrap) customWrap.style.display = 'none';
     }
   }
 }
@@ -4472,6 +4825,66 @@ function populateMusicSelects(tracks) {
     }
   }
 
+  // Populate Car Edit "Phonk Track" selector (#carMotionPhonkSelect) with:
+  // 1) All 8 Built-in Phonk & Car Edit Styles, 2) Newly Generated AI Music Tracks, 3) Saved Library Tracks
+  const carPhonkSelect = document.getElementById('carMotionPhonkSelect');
+  if (carPhonkSelect) {
+    const curPhonkVal = (lastGeneratedCustomTrack && lastGeneratedCustomTrack.id && currentMainWorkspaceTab === 'car')
+      ? lastGeneratedCustomTrack.id
+      : (carPhonkSelect.value || 'drift_phonk');
+    carPhonkSelect.innerHTML = '';
+
+    const builtinPhonkStyles = [
+      { id: 'drift_phonk', label: '🔥 ACE-Step Drift Phonk (130 BPM)' },
+      { id: 'brazilian_phonk', label: '⚡ Hard Brazilian Phonk (135 BPM)' },
+      { id: 'night_drive', label: '🌙 Night Drive Wave Phonk (124 BPM)' },
+      { id: 'tokyo_touge', label: '🎌 Tokyo Touge Drift Phonk (132 BPM)' },
+      { id: 'aggressive_cowbell', label: '🔔 Aggressive 808 Cowbell Phonk (138 BPM)' },
+      { id: 'cyber_supercar', label: '🚀 Cyber Supercar Synth Phonk (128 BPM)' },
+      { id: 'dark_memphis', label: '💀 Dark Memphis Underground Phonk (126 BPM)' },
+      { id: 'hypercar_orchestral', label: '👑 Hypercar Orchestral Phonk (130 BPM)' }
+    ];
+    const phonkGroup = document.createElement('optgroup');
+    phonkGroup.label = '🔥 Built-in & ACE-Step Phonk Styles';
+    builtinPhonkStyles.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.label;
+      if (p.id === curPhonkVal) opt.selected = true;
+      phonkGroup.appendChild(opt);
+    });
+    carPhonkSelect.appendChild(phonkGroup);
+
+    const aiTracks = tracks.filter(t => t.source === 'ai_generated');
+    if (aiTracks.length > 0) {
+      const newAiGroup = document.createElement('optgroup');
+      newAiGroup.label = '✨ Newly Generated AI Music Tracks';
+      aiTracks.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.textContent = `🆕 ${t.name.replace(/^⚡\s*/, '')}`;
+        if (t.id === curPhonkVal) opt.selected = true;
+        newAiGroup.appendChild(opt);
+      });
+      carPhonkSelect.appendChild(newAiGroup);
+    }
+
+    const libTracks = tracks.filter(t => t.source === 'library');
+    if (libTracks.length > 0) {
+      const libGroup = document.createElement('optgroup');
+      libGroup.label = '📁 My Saved Music Library';
+      libTracks.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        const defStar = t.is_default ? '⭐ [DEFAULT] ' : '💾 ';
+        opt.textContent = `${defStar}${t.name.replace(/^💾\s*/, '')} (${t.genre})`;
+        if (t.id === curPhonkVal) opt.selected = true;
+        libGroup.appendChild(opt);
+      });
+      carPhonkSelect.appendChild(libGroup);
+    }
+  }
+
   // Populate remix modal track selector
   const remixSelect = document.getElementById('remixTrackSelect');
   if (remixSelect) {
@@ -4569,14 +4982,15 @@ async function triggerGenerateCustomMusic() {
   const category = currentSelectedCategory || 'Metal';
   const mood = document.querySelector('input[name="musicMood"]:checked')?.value || 'Aggressive';
   const vocals = document.querySelector('input[name="musicVocals"]:checked')?.value || 'Instrumental';
-  const duration = parseFloat(document.querySelector('input[name="musicDuration"]:checked')?.value || '60');
+  const duration = getSelectedMusicDurationSeconds();
+  const durLabel = formatMusicDurationLabel(duration);
   const prompt = document.getElementById('customMusicPrompt')?.value.trim() || DEFAULT_CATEGORY_PROMPTS[category] || '';
   const statusEl = document.getElementById('customMusicStatus');
   const btn = document.getElementById('btnGenerateCustomMusic');
 
   if (statusEl) {
     statusEl.style.color = '#38bdf8';
-    statusEl.textContent = `Synthesizing ${category} (${mood} · ${vocals} · ${duration}s)...`;
+    statusEl.textContent = `Synthesizing ${category} (${mood} · ${vocals} · ${durLabel})...`;
   }
   if (btn) btn.disabled = true;
 
@@ -4588,7 +5002,7 @@ async function triggerGenerateCustomMusic() {
       vocals,
       duration,
       prompt,
-      name: `${category} - ${mood} (${vocals})`
+      name: `${category} - ${mood} (${durLabel})`
     });
     const post = (url) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
 
@@ -4596,17 +5010,15 @@ async function triggerGenerateCustomMusic() {
     if (engine === 'acestep') {
       if (statusEl) {
         statusEl.style.color = '#c084fc';
-        statusEl.textContent = 'ACE-Step 1.5 is composing your track (generating high-fidelity neural audio)...';
+        statusEl.textContent = 'ACE-Step 1.5 is composing your track (falling back to MusicAgent if server offline)...';
       }
       res = await post('/api/music/acestep/generate');
       if (!res.ok) {
-        const errJson = await res.clone().json().catch(() => ({}));
-        const why = errJson.detail || 'server not reachable';
         if (statusEl) {
-          statusEl.style.color = '#ef4444';
-          statusEl.textContent = `⚠ ACE-Step generation failed: ${why}`;
+          statusEl.style.color = '#38bdf8';
+          statusEl.textContent = `Synthesizing ${category} (${mood} · ${vocals} · ${durLabel}) with MusicAgent...`;
         }
-        throw new Error(why);
+        res = await post('/api/music/generate-custom');
       }
     } else {
       res = await post('/api/music/generate-custom');
@@ -4616,7 +5028,7 @@ async function triggerGenerateCustomMusic() {
       lastGeneratedCustomTrack = data.track;
       if (statusEl) {
         statusEl.style.color = '#10b981';
-        statusEl.textContent = `✓ Generated ${category} ${mood} track (${duration}s) with ${engine === 'acestep' ? 'ACE-Step 1.5' : 'Local Procedural'}!`;
+        statusEl.textContent = `✓ Generated ${category} ${mood} track (${durLabel})!`;
       }
       const playerBox = document.getElementById('customMusicPlayerBox');
       const player = document.getElementById('customMusicAudioPlayer');
@@ -4634,8 +5046,8 @@ async function triggerGenerateCustomMusic() {
         player.play().catch(() => {});
         if (titleEl) titleEl.textContent = `🎵 ${data.track.name}`;
         if (tagsEl) tagsEl.textContent = `${category} · ${mood} · ${vocals}`;
-        if (durEl) durEl.textContent = `${Math.round(duration)} seconds`;
-        if (nameInput) nameInput.value = `${category} ${mood} Theme`;
+        if (durEl) durEl.textContent = durLabel;
+        if (nameInput) nameInput.value = `${category} ${mood} (${durLabel})`;
 
         // Render MusicAgent Deep Research & QA Verification Specs
         const specsCard = document.getElementById('musicAgentSpecsCard');
@@ -4694,6 +5106,165 @@ async function triggerGenerateCustomMusic() {
     }
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+
+async function triggerCreateMusicOnlyClips(useCurrentTrack = false) {
+  const category = currentSelectedCategory || 'Sleep Music';
+  const mood = document.querySelector('input[name="musicMood"]:checked')?.value || 'Relaxing';
+  const vocals = document.querySelector('input[name="musicVocals"]:checked')?.value || 'Instrumental';
+  const duration = getSelectedMusicDurationSeconds();
+  const durLabel = formatMusicDurationLabel(duration);
+  const clipCount = parseInt(document.getElementById('musicOnlyClipCountSelect')?.value || '3', 10);
+  const prompt = document.getElementById('customMusicPrompt')?.value.trim() || DEFAULT_CATEGORY_PROMPTS[category] || '';
+  const statusEl = document.getElementById('customMusicStatus');
+  const clipStatusEl = document.getElementById('clipCutterStatus');
+  const btn = document.getElementById('btnCreateMusicOnlyClips');
+  const btnFromTrack = document.getElementById('btnCreateClipsFromCurrentTrack');
+
+  const payload = {
+    category,
+    mood,
+    vocals,
+    duration,
+    clip_count: clipCount,
+    prompt
+  };
+
+  if (useCurrentTrack && lastGeneratedCustomTrack) {
+    payload.track_id = lastGeneratedCustomTrack.id || lastGeneratedCustomTrack.filename;
+    payload.clip_start = parseFloat(document.getElementById('customClipStart')?.value || '0.0');
+    const cDur = parseFloat(document.getElementById('customClipDuration')?.value || '0.0');
+    payload.clip_duration = cDur > 0.5 ? cDur : null;
+    payload.clip_loop = document.getElementById('chkCustomClipLoop')?.checked ?? true;
+  }
+
+  if (statusEl) {
+    statusEl.style.color = '#38bdf8';
+    statusEl.textContent = `🎬 Synthesizing ${category} (${durLabel}) & rendering ${clipCount} visual 9:16 video clips + Music-Only Short...`;
+  }
+  if (clipStatusEl && useCurrentTrack) {
+    clipStatusEl.style.color = '#38bdf8';
+    clipStatusEl.textContent = `🎬 Rendering ${clipCount} visual video clips synchronized to your music...`;
+  }
+  if (btn) btn.disabled = true;
+  if (btnFromTrack) btnFromTrack.disabled = true;
+
+  try {
+    const res = await fetch('/api/music/create-clips', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (res.ok && data.status === 'success') {
+      if (data.track) {
+        lastGeneratedCustomTrack = data.track;
+        const playerBox = document.getElementById('customMusicPlayerBox');
+        const player = document.getElementById('customMusicAudioPlayer');
+        const titleEl = document.getElementById('customPlayerTitle');
+        const tagsEl = document.getElementById('customPlayerTags');
+        const durEl = document.getElementById('customPlayerDur');
+        const nameInput = document.getElementById('saveTrackNameInput');
+        if (playerBox && player) {
+          playerBox.style.display = 'block';
+          player.pause();
+          player.currentTime = 0;
+          player.src = `${data.track.url}${data.track.url.includes('?') ? '&' : '?'}cb=${Date.now()}`;
+          player.load();
+          if (titleEl) titleEl.textContent = `🎵 ${data.track.name}`;
+          if (tagsEl) tagsEl.textContent = `${category} · ${mood} · ${vocals}`;
+          if (durEl) durEl.textContent = formatMusicDurationLabel(data.track.duration || duration);
+          if (nameInput) nameInput.value = `${category} ${mood} (${durLabel})`;
+        }
+      }
+
+      const clipsBox = document.getElementById('musicOnlyClipsOutputBox');
+      const clipsGrid = document.getElementById('musicOnlyClipsGrid');
+      const clipsTitle = document.getElementById('musicOnlyClipsTitle');
+      const clipsBadge = document.getElementById('musicOnlyClipsBadge');
+      const btnOpenProj = document.getElementById('btnOpenMusicShortProject');
+
+      const clips = data.clips || [];
+      const proj = data.project || {};
+
+      if (clipsBox && clipsGrid) {
+        clipsBox.style.display = 'block';
+        if (clipsTitle) clipsTitle.textContent = `🎬 ${proj.title || category} — Visual Music Clips`;
+        if (clipsBadge) clipsBadge.textContent = `${clips.length} Clips + Full Short (${Math.round(proj.target_duration || duration)}s)`;
+        if (btnOpenProj && proj.id) {
+          btnOpenProj.onclick = () => {
+            closeMusicModal();
+            openProjectModal(proj.id);
+          };
+        }
+
+        const clipCardsHtml = clips.map(c => `
+          <div style="background: #0b1120; border: 1px solid #1e293b; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-size: 12px; font-weight: 700; color: #38bdf8;">🎬 ${escapeHtml(c.title)}</span>
+              <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #7dd3fc; font-size: 10px;">${c.duration}s (${c.start_sec}s-${c.end_sec}s)</span>
+            </div>
+            <video src="${c.video_url}?t=${Date.now()}" controls loop preload="metadata" style="width: 100%; max-height: 250px; border-radius: 8px; background: #000;"></video>
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+              <span style="font-size: 10.5px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(c.caption || category)}</span>
+              <a href="${c.video_url}" download="${escapeHtml(c.filename)}" class="btn btn-xs btn-secondary" style="font-size: 10.5px; padding: 3px 8px; text-decoration: none;">⬇ MP4</a>
+            </div>
+          </div>
+        `).join('');
+
+        const fullShortCardHtml = proj.id ? `
+          <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid #10b981; border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-size: 12px; font-weight: 800; color: #34d399;">🌟 Full Music-Only Short</span>
+              <span class="badge" style="background: #10b981; color: #fff; font-size: 10px;">${Math.round(proj.target_duration || duration)}s Master</span>
+            </div>
+            <video src="/api/video/${proj.id}?t=${Date.now()}" controls loop preload="metadata" style="width: 100%; max-height: 250px; border-radius: 8px; background: #000;"></video>
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+              <button type="button" class="btn btn-xs btn-primary" onclick="closeMusicModal(); openProjectModal('${escapeHtml(proj.id)}')" style="flex: 1; font-size: 10.5px; padding: 4px 8px; background: #2563eb;">📺 Open in Studio / Publish</button>
+              <a href="/api/video/${proj.id}" download="${escapeHtml(category.toLowerCase().replace(/\s+/g, '_'))}_short.mp4" class="btn btn-xs btn-secondary" style="font-size: 10.5px; padding: 4px 8px; text-decoration: none;">⬇ Full MP4</a>
+            </div>
+          </div>
+        ` : '';
+
+        clipsGrid.innerHTML = clipCardsHtml + fullShortCardHtml;
+        clipsBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      if (statusEl) {
+        statusEl.style.color = '#10b981';
+        statusEl.textContent = `✓ ${data.message || `Created ${clips.length} visual clips + Music-Only Short!`}`;
+      }
+      if (clipStatusEl && useCurrentTrack) {
+        clipStatusEl.style.color = '#10b981';
+        clipStatusEl.textContent = `✓ Created ${clips.length} visual video clips + Music-Only Short!`;
+      }
+
+      await loadProjects();
+      await loadMusicTracks();
+    } else {
+      const errMsg = data.detail || 'Failed to create music clips';
+      if (statusEl) {
+        statusEl.style.color = '#ef4444';
+        statusEl.textContent = `Error: ${errMsg}`;
+      }
+      if (clipStatusEl && useCurrentTrack) {
+        clipStatusEl.style.color = '#ef4444';
+        clipStatusEl.textContent = `Error: ${errMsg}`;
+      }
+    }
+  } catch (err) {
+    if (statusEl) {
+      statusEl.style.color = '#ef4444';
+      statusEl.textContent = `Error: ${err.message}`;
+    }
+    if (clipStatusEl && useCurrentTrack) {
+      clipStatusEl.style.color = '#ef4444';
+      clipStatusEl.textContent = `Error: ${err.message}`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnFromTrack) btnFromTrack.disabled = false;
   }
 }
 
@@ -5689,6 +6260,428 @@ window.applyCurrentTrimmedClipToActiveProject = applyCurrentTrimmedClipToActiveP
 window.saveCurrentTrimmedClipToLibrary = saveCurrentTrimmedClipToLibrary;
 window.setAddClipPreset = setAddClipPreset;
 window.setRemixClipPreset = setRemixClipPreset;
+function switchMainWorkspaceTab(tabName) {
+  currentMainWorkspaceTab = tabName || 'weapon';
+  const tabs = ['weapon', 'car', 'music'];
+  tabs.forEach(t => {
+    const cap = t.charAt(0).toUpperCase() + t.slice(1);
+    const btn = document.getElementById(`mainTabBtn${cap}`);
+    const pane = document.getElementById(`mainTab${cap}`);
+    if (btn) {
+      if (t === tabName) btn.classList.add('active');
+      else btn.classList.remove('active');
+    }
+    if (pane) {
+      if (t === tabName) pane.classList.remove('hidden');
+      else pane.classList.add('hidden');
+    }
+  });
+  if (activeProject) {
+    renderModalPublishState(activeProject);
+  }
+}
+
+function switchCarSubTab(subTab) {
+  const modes = ['static', 'motion', 'queue'];
+  modes.forEach(m => {
+    const cap = m.charAt(0).toUpperCase() + m.slice(1);
+    const btn = document.getElementById(`carSubTabBtn${cap}`);
+    const pane = document.getElementById(`carSubTab${cap}`);
+    if (btn) {
+      if (m === subTab) btn.classList.add('active');
+      else btn.classList.remove('active');
+    }
+    if (pane) {
+      if (m === subTab) pane.classList.remove('hidden');
+      else pane.classList.add('hidden');
+    }
+  });
+  if (subTab === 'queue') {
+    loadCarQueue();
+  }
+}
+
+let carQueueMoodsCache = [];
+
+async function loadCarQueue() {
+  const grid = document.getElementById('carQueueSlotsGrid');
+  if (!grid) return;
+  try {
+    const res = await fetch(`/api/car-queue?t=${Date.now()}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    carQueueMoodsCache = data.moods || [];
+    const tgBadge = document.getElementById('carQueueTgStatusBadge');
+    if (tgBadge && data.notifications) {
+      const tgOk = data.notifications.telegram;
+      tgBadge.innerHTML = tgOk
+        ? '✓ Telegram Bot Active (Sends MP4 + Approve/Reject buttons)'
+        : 'ℹ️ Set TELEGRAM_BOT_TOKEN &amp; TELEGRAM_CHAT_ID in .env for phone buttons';
+      tgBadge.style.color = tgOk ? '#34d399' : '#94a3b8';
+    }
+    renderCarQueueSlots(data.slots || []);
+  } catch (err) {
+    console.error('Failed to load car queue:', err);
+  }
+}
+
+function renderCarQueueSlots(slots) {
+  const grid = document.getElementById('carQueueSlotsGrid');
+  if (!grid) return;
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const upcoming = slots.filter(s => (s.scheduled_date || '') >= todayIso).slice(0, 7);
+  const list = upcoming.length ? upcoming : slots.slice(-7);
+
+  grid.innerHTML = list.map((s, idx) => {
+    const isToday = s.scheduled_date === todayIso;
+    const statusColors = {
+      queued: { bg: 'rgba(56, 189, 248, 0.14)', border: 'rgba(56, 189, 248, 0.4)', text: '#38bdf8', label: '⏳ Queued' },
+      running: { bg: 'rgba(245, 158, 11, 0.18)', border: 'rgba(245, 158, 11, 0.5)', text: '#fbbf24', label: '⚙️ Generating...' },
+      awaiting_telegram_approval: { bg: 'rgba(168, 85, 247, 0.18)', border: 'rgba(168, 85, 247, 0.5)', text: '#c084fc', label: '📲 Awaiting Telegram Approval' },
+      approved_private: { bg: 'rgba(16, 185, 129, 0.18)', border: 'rgba(16, 185, 129, 0.5)', text: '#34d399', label: '🔒 Approved (Private on @AutoFlashX)' },
+      rejected: { bg: 'rgba(239, 68, 68, 0.16)', border: 'rgba(239, 68, 68, 0.4)', text: '#f87171', label: '❌ Rejected' },
+      failed: { bg: 'rgba(239, 68, 68, 0.16)', border: 'rgba(239, 68, 68, 0.4)', text: '#f87171', label: '⚠️ Failed' }
+    };
+    const st = statusColors[s.status] || statusColors.queued;
+    const moodOpts = (carQueueMoodsCache || []).map(m =>
+      `<option value="${escapeHtml(m.mood_id)}" ${m.mood_id === s.mood_id ? 'selected' : ''}>${escapeHtml(m.label)} (${m.bpm} BPM)</option>`
+    ).join('');
+
+    return `
+      <div style="background: #0b1120; border: 1px solid ${isToday ? '#38bdf8' : '#1e293b'}; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; justify-content: space-between; gap: 8px; box-shadow: ${isToday ? '0 0 14px rgba(56, 189, 248, 0.2)' : 'none'};">
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 6px;">
+            <span style="font-size: 12px; font-weight: 800; color: ${isToday ? '#38bdf8' : '#e2e8f0'};">
+              Day ${idx + 1} · ${escapeHtml(s.weekday || s.scheduled_date)}${isToday ? ' (TODAY)' : ''}
+            </span>
+            <span class="badge" style="background: ${st.bg}; border: 1px solid ${st.border}; color: ${st.text}; font-size: 10px; padding: 2px 7px;">
+              ${st.label}
+            </span>
+          </div>
+          <input type="text" value="${escapeHtml(s.car_name || '')}"
+            onchange="updateCarQueueSlot('${escapeHtml(s.id)}', { car_name: this.value })"
+            style="width: 100%; padding: 6px 9px; font-size: 12.5px; font-weight: 700; background: #131a29; border: 1px solid #23304a; border-radius: 7px; color: #f8fafc; margin-bottom: 6px;"
+            title="Edit car name or 'A vs B vs C' matchup for this day">
+          <select onchange="updateCarQueueSlot('${escapeHtml(s.id)}', { mood_id: this.value })"
+            style="width: 100%; padding: 5px 8px; font-size: 11.5px; background: #090d16; border: 1px solid #23304a; border-radius: 7px; color: #cbd5e1;">
+            ${moodOpts}
+          </select>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; padding-top: 4px;">
+          <button type="button" class="btn btn-xs btn-weaponx" onclick="runCarQueueSlotNow('${escapeHtml(s.id)}', this)" style="flex: 1; padding: 6px 10px; font-size: 11.5px; justify-content: center;">
+            ▶️ Run Car Edit Now
+          </button>
+          ${s.project_id ? `<button type="button" class="btn btn-xs btn-secondary" onclick="openModal('${escapeHtml(s.project_id)}')" style="padding: 6px 10px; font-size: 11.5px;">🎬 Open Video</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function updateCarQueueSlot(slotId, payload) {
+  try {
+    const res = await fetch(`/api/car-queue/${encodeURIComponent(slotId)}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      renderCarQueueSlots(data.slots || []);
+    }
+  } catch (err) {
+    console.error('Failed to update slot:', err);
+  }
+}
+
+async function refillCarQueue(forceReset = false) {
+  try {
+    const res = await fetch('/api/car-queue/refill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force_reset: Boolean(forceReset) })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      renderCarQueueSlots(data.slots || []);
+    }
+  } catch (err) {
+    console.error('Failed to refill queue:', err);
+  }
+}
+
+async function runCarQueueSlotNow(slotId, btnEl) {
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = '⏳ Starting...';
+  }
+  const banner = document.getElementById('statusBanner');
+  const msg = document.getElementById('statusMessage');
+  if (banner) banner.classList.remove('hidden');
+  if (msg) msg.textContent = '🏎️ Launching queued Daily Car Edit + Telegram Approval dispatch...';
+
+  try {
+    const res = await fetch(`/api/car-queue/${encodeURIComponent(slotId)}/run`, { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      if (msg) msg.textContent = `🏎️ ${data.message} — generating & sending to Telegram for approval...`;
+      await loadCarQueue();
+      setTimeout(() => loadProjects(), 1500);
+      pollGenerationStatus(null);
+    } else {
+      alert(data.detail || 'Failed to start queued Car Edit');
+      if (banner) banner.classList.add('hidden');
+    }
+  } catch (err) {
+    console.error(err);
+    if (banner) banner.classList.add('hidden');
+  } finally {
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.textContent = '▶️ Run Car Edit Now';
+    }
+  }
+}
+
+async function pollCarQueueTelegramApprovals() {
+  try {
+    const res = await fetch('/api/car-queue/poll-telegram', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      renderCarQueueSlots(data.slots || []);
+      await loadProjects();
+      const badge = document.getElementById('carQueueTgStatusBadge');
+      if (badge) {
+        badge.textContent = data.handled_decisions > 0
+          ? `✓ Processed ${data.handled_decisions} Telegram approval decision(s)!`
+          : '✓ Polled Telegram — no new button presses waiting.';
+        badge.style.color = '#38bdf8';
+      }
+    }
+  } catch (err) {
+    console.error('Failed to poll Telegram:', err);
+  }
+}
+
+function fillCarStaticExample(exampleText) {
+  const input = document.getElementById('carStaticNameInput');
+  if (input) {
+    input.value = exampleText;
+    input.focus();
+  }
+}
+
+async function triggerCarStaticGenerate(forceComparison = false) {
+  const nameInput = document.getElementById('carStaticNameInput');
+  const durationSelect = document.getElementById('carStaticDurationSelect');
+  const audioSelect = document.getElementById('carStaticAudioSelect');
+  const voiceSelect = document.getElementById('carStaticVoiceSelect');
+  const btnCar = document.getElementById('btnCarStaticGenerate');
+  const btnComp = document.getElementById('btnCarComparisonGenerate');
+
+  const rawCarName = nameInput && nameInput.value ? nameInput.value.trim() : '';
+  const defaultTopic = forceComparison
+    ? 'Porsche 911 GT3 RS vs Ferrari SF90 vs Lamborghini Revuelto'
+    : 'Bugatti Tourbillon V16 Hypercar';
+  const topic = rawCarName || defaultTopic;
+  const isVsComparison = forceComparison || /\s+(?:vs\.?|versus)\s+/i.test(topic);
+  let duration = durationSelect ? parseFloat(durationSelect.value) : 10;
+  if (isNaN(duration) || duration < 5) duration = 5;
+  if (duration > 180) duration = 180;
+
+  const audioMode = audioSelect ? audioSelect.value : 'with_voice';
+  const langVoiceRaw = voiceSelect ? voiceSelect.value : 'en:en-US-ChristopherNeural';
+  const [selectedLang, selectedVoice] = langVoiceRaw.includes(':')
+    ? langVoiceRaw.split(':')
+    : ['en', 'en-US-ChristopherNeural'];
+
+  let withVoice = true;
+  let withMusic = true;
+  if (audioMode === 'without_music') {
+    withVoice = true;
+    withMusic = false;
+  } else if (audioMode === 'without_voice') {
+    withVoice = false;
+    withMusic = true;
+  } else if (audioMode === 'mute') {
+    withVoice = false;
+    withMusic = false;
+  }
+
+  const banner = document.getElementById('statusBanner');
+  const msg = document.getElementById('statusMessage');
+  if (banner) banner.classList.remove('hidden');
+  if (msg) {
+    msg.textContent = isVsComparison
+      ? `⚔️ Initiating 'A vs B vs C' Comparison Poster Short (${duration}s) for: "${topic}"...`
+      : `Initiating Car Static Image Short (${duration}s) for: "${topic}"...`;
+  }
+  if (btnCar) btnCar.disabled = true;
+  if (btnComp) btnComp.disabled = true;
+
+  try {
+    const res = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic,
+        auto_publish: false,
+        style: isVsComparison ? 'weaponx' : 'default',
+        with_voice: withVoice,
+        with_music: withMusic,
+        audio_mode: audioMode,
+        duration: duration,
+        language: selectedLang,
+        voice: selectedVoice,
+        music_track: 'default',
+        music_volume: 0.22,
+        motion: 'static',
+        channel: 'autoflashx'
+      })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (nameInput) nameInput.value = '';
+      await loadProjects();
+      if (data.status === 'already_running') {
+        if (msg) msg.textContent = `⏳ ${data.message}`;
+        const card = document.querySelector(`[data-project-id="${data.project_id}"]`);
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      pollGenerationStatus(data.project_id);
+    } else {
+      alert('Failed to start Car Short generation');
+      if (banner) banner.classList.add('hidden');
+    }
+  } catch (err) {
+    console.error(err);
+    if (banner) banner.classList.add('hidden');
+  } finally {
+    if (btnCar) btnCar.disabled = false;
+    if (btnComp) btnComp.disabled = false;
+  }
+}
+
+function fillCarMotionExample(carName) {
+  const input = document.getElementById('carMotionNameInput');
+  if (input) {
+    input.value = carName;
+    input.focus();
+  }
+}
+
+function toggleCarAnimateAllScenesUI() {
+  const chk = document.getElementById('chkCarAnimateAllScenes');
+  const wrap = document.getElementById('carAnimateEngineWrap');
+  if (wrap && chk) {
+    wrap.style.opacity = chk.checked ? '1' : '0.65';
+  }
+}
+
+async function triggerCarMotionGenerate() {
+  const nameInput = document.getElementById('carMotionNameInput');
+  const titleInput = document.getElementById('carMotionTitleInput');
+  const durationSelect = document.getElementById('carMotionDurationSelect');
+  const motionPresetSelect = document.getElementById('carMotionPresetSelect');
+  const beatSyncSelect = document.getElementById('carMotionBeatSyncSelect');
+  const phonkSelect = document.getElementById('carMotionPhonkSelect');
+  const audioSelect = document.getElementById('carMotionAudioSelect');
+  const chkAnimateAll = document.getElementById('chkCarAnimateAllScenes');
+  const clipEngineSelect = document.getElementById('carAnimateEngineSelect');
+  const btnMotion = document.getElementById('btnCarMotionGenerate');
+
+  const rawCarName = nameInput && nameInput.value ? nameInput.value.trim() : '';
+  const topic = rawCarName || 'Porsche 911 GT3 RS';
+  const customTitle = titleInput && titleInput.value ? titleInput.value.trim() : '';
+  let duration = durationSelect ? parseFloat(durationSelect.value) : 15;
+  if (isNaN(duration) || duration < 5) duration = 10;
+  if (duration > 180) duration = 180;
+
+  const motionPreset = motionPresetSelect ? motionPresetSelect.value : 'swxft_dynamic';
+  const beatSyncMode = beatSyncSelect ? beatSyncSelect.value : 'swxft_velocity';
+  const phonkStyle = phonkSelect ? phonkSelect.value : 'drift_phonk';
+  const audioMode = audioSelect ? audioSelect.value : 'without_voice';
+  const withVoice = (audioMode === 'with_voice');
+  const animateAllScenes = Boolean(chkAnimateAll && chkAnimateAll.checked);
+  const clipEngine = clipEngineSelect ? clipEngineSelect.value : 'auto';
+
+  const banner = document.getElementById('statusBanner');
+  const msg = document.getElementById('statusMessage');
+  if (banner) banner.classList.remove('hidden');
+  if (msg) {
+    const clipTag = animateAllScenes ? ` + LTX/Phosphene Motion Clips on Every Scene (${clipEngine})` : ' + Beat-Synced Velocity Ramps';
+    msg.textContent = `🏎️ Initiating Swxft Car Edit (${duration}s${clipTag}) for: "${topic}"...`;
+  }
+  if (btnMotion) btnMotion.disabled = true;
+
+  try {
+    const res = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic,
+        auto_publish: false,
+        style: 'car_edit',
+        with_voice: withVoice,
+        with_music: true,
+        audio_mode: audioMode,
+        duration: duration,
+        language: 'en',
+        voice: 'en-US-ChristopherNeural',
+        music_track: phonkStyle,
+        music_volume: withVoice ? 0.28 : 0.92,
+        car_edit_title: customTitle || null,
+        car_motion_preset: motionPreset,
+        phonk_style: phonkStyle,
+        beat_sync_mode: beatSyncMode,
+        animate_all_scenes: animateAllScenes,
+        clip_engine: clipEngine,
+        channel: 'autoflashx'
+      })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (nameInput) nameInput.value = '';
+      if (titleInput) titleInput.value = '';
+      await loadProjects();
+      if (data.status === 'already_running') {
+        if (msg) msg.textContent = `⏳ ${data.message}`;
+        const card = document.querySelector(`[data-project-id="${data.project_id}"]`);
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      pollGenerationStatus(data.project_id);
+    } else {
+      alert('Failed to start Car Edit generation');
+      if (banner) banner.classList.add('hidden');
+    }
+  } catch (err) {
+    console.error(err);
+    if (banner) banner.classList.add('hidden');
+  } finally {
+    if (btnMotion) btnMotion.disabled = false;
+  }
+}
+
+window.switchMainWorkspaceTab = switchMainWorkspaceTab;
+window.switchCarSubTab = switchCarSubTab;
+window.triggerCarStaticGenerate = triggerCarStaticGenerate;
+window.fillCarStaticExample = fillCarStaticExample;
+window.triggerCarMotionGenerate = triggerCarMotionGenerate;
+window.loadCarQueue = loadCarQueue;
+window.updateCarQueueSlot = updateCarQueueSlot;
+window.refillCarQueue = refillCarQueue;
+window.runCarQueueSlotNow = runCarQueueSlotNow;
+window.pollCarQueueTelegramApprovals = pollCarQueueTelegramApprovals;
+window.fillCarMotionExample = fillCarMotionExample;
+window.toggleCarAnimateAllScenesUI = toggleCarAnimateAllScenesUI;
+window.openMusicOnlyStudio = openMusicOnlyStudio;
+window.selectMusicOnlyOption = selectMusicOnlyOption;
+window.quickRunMusicOnlyOption = quickRunMusicOnlyOption;
+window.triggerCreateMusicOnlyClips = triggerCreateMusicOnlyClips;
+window.syncMusicDurationFromTop = syncMusicDurationFromTop;
+window.syncMusicDurationFromRadio = syncMusicDurationFromRadio;
 
 // ---- Caption Style editor ----
 const CAPTION_FIELDS = {
@@ -5896,3 +6889,251 @@ async function resetCaptionStyle() {
   applyCaptionPreset('classic');
   setCaptionStatus(`✓ ${data.message}`, '#10b981');
 }
+
+// ---- Scene Motion & Effects editor (zoom / pan / focus / filters) ----
+const FX_FALLBACK_OPTIONS = {
+  motions: [
+    { id: 'auto', label: 'Auto (alternating zoom)' }, { id: 'zoom_in', label: 'Zoom in' }, { id: 'zoom_out', label: 'Zoom out' },
+    { id: 'pan_left', label: 'Pan left' }, { id: 'pan_right', label: 'Pan right' }, { id: 'pan_up', label: 'Pan up' },
+    { id: 'pan_down', label: 'Pan down' }, { id: 'focus', label: 'Focus (push in to a point)' }, { id: 'static', label: 'Static (no motion)' }
+  ],
+  strengths: ['subtle', 'normal', 'strong'],
+  speed_ramps: [
+    { id: 'none', label: 'Smooth (standard)' },
+    { id: 'velocity', label: 'Swxft Velocity (Fast · Slow-Mo · Fast)' },
+    { id: 'whip_in', label: 'Whip-In → Slow-Mo Hold' },
+    { id: 'whip_out', label: 'Slow-Mo → Whip-Out Exit' }
+  ],
+  filters: [
+    { id: 'none', label: 'None' }, { id: 'cinematic', label: 'Cinematic' }, { id: 'bw', label: 'Black & white' },
+    { id: 'sepia', label: 'Sepia' }, { id: 'vintage', label: 'Vintage' }, { id: 'warm', label: 'Warm' },
+    { id: 'cool', label: 'Cool' }, { id: 'vivid', label: 'Vivid' }
+  ],
+  toggles: ['vignette', 'focus_blur', 'beat_flash', 'fade_in', 'fade_out']
+};
+const FX_TOGGLE_LABELS = {
+  vignette: 'Vignette',
+  focus_blur: 'Focus blur (edges soft)',
+  beat_flash: 'Beat flash & bass pulse (Swxft)',
+  fade_in: 'Fade in',
+  fade_out: 'Fade out'
+};
+const fxState = { scene: 1, options: null, value: null, previewSeq: 0, previewUrl: null, previewTimer: null };
+
+function sceneEffectsOf(scene) {
+  const d = activeProject?.scene_defaults || {};
+  return {
+    motion: scene?.motion || d.motion || 'auto',
+    motion_strength: scene?.motion_strength || d.motion_strength || 'normal',
+    speed_ramp: scene?.speed_ramp || d.speed_ramp || 'none',
+    beat_sync: Boolean(scene?.beat_sync ?? d.beat_sync ?? false),
+    bpm: Number(scene?.bpm || d.bpm || 130),
+    focus_point: scene?.focus_point || d.focus_point || { x: 0.5, y: 0.45 },
+    effects: Object.assign({ filter: 'none', vignette: false, focus_blur: false, beat_flash: false, fade_in: false, fade_out: false }, d.effects || {}, scene?.effects || {})
+  };
+}
+
+function sceneEffectsBadge(scene) {
+  const fx = sceneEffectsOf(scene);
+  const parts = [];
+  if (fx.motion && fx.motion !== 'auto') parts.push(fx.motion.replace('_', ' '));
+  if (fx.speed_ramp && fx.speed_ramp !== 'none') parts.push(`⚡ ${fx.speed_ramp.replace('_', ' ')}`);
+  if (fx.beat_sync || fx.effects.beat_flash) parts.push(`🥁 ${scene?.beats ? scene.beats + 'B ' : ''}beat-sync`);
+  if (fx.effects.filter && fx.effects.filter !== 'none') parts.push(fx.effects.filter);
+  ['vignette', 'focus_blur', 'fade_in', 'fade_out'].forEach(k => { if (fx.effects[k]) parts.push(k.replace('_', ' ')); });
+  return parts.length ? `<span class="source-pill fx" title="Motion, speed ramp & beat-sync effects">🎞 ${escapeHtml(parts.join(' · '))}</span>` : '';
+}
+
+async function loadEffectOptions() {
+  if (fxState.options) return fxState.options;
+  try {
+    const res = await fetch(`/api/scene-effects/options?t=${Date.now()}`);
+    if (res.ok) fxState.options = await res.json();
+  } catch (e) { /* use fallback */ }
+  fxState.options = fxState.options || FX_FALLBACK_OPTIONS;
+  return fxState.options;
+}
+
+async function openSceneEffectsModal(sceneNumber) {
+  if (!activeProject) return;
+  fxState.scene = sceneNumber;
+  const scene = (activeProject.scenes || []).find(sc => sc.scene_number === sceneNumber);
+  fxState.value = JSON.parse(JSON.stringify(sceneEffectsOf(scene)));
+  const opts = await loadEffectOptions();
+
+  document.getElementById('fxSceneNum').textContent = sceneNumber;
+  const isClip = Boolean(scene?.clip_path);
+  document.getElementById('fxClipNote').classList.toggle('hidden', !isClip);
+  document.getElementById('fxMotionBlock').classList.toggle('fx-disabled', isClip);
+
+  document.getElementById('fxMotion').innerHTML = (opts.motions || []).map(m => `<option value="${m.id}">${escapeHtml(m.label)}</option>`).join('');
+  const speedRampEl = document.getElementById('fxSpeedRamp');
+  if (speedRampEl) {
+    const ramps = opts.speed_ramps || FX_FALLBACK_OPTIONS.speed_ramps;
+    speedRampEl.innerHTML = ramps.map(r => `<option value="${r.id}">${escapeHtml(r.label)}</option>`).join('');
+    speedRampEl.onchange = (e) => setFx('speed_ramp', e.target.value);
+  }
+  // Options may be plain ids or {id, label} objects
+  const labels = Object.assign({}, FX_TOGGLE_LABELS, opts.labels || {});
+  const norm = (x) => (typeof x === 'string' ? { id: x, label: labels[x] || x } : { id: x.id, label: labels[x.id] || x.label || x.id });
+  document.getElementById('fxStrength').innerHTML = (opts.strengths || []).map(norm).map(st =>
+    `<button type="button" class="fx-seg" data-v="${st.id}" onclick="setFx('motion_strength','${st.id}')">${escapeHtml(st.label)}</button>`).join('');
+  document.getElementById('fxFilters').innerHTML = (opts.filters || []).map(f =>
+    `<button type="button" class="fx-chip" data-v="${f.id}" onclick="setFxEffect('filter','${f.id}')">${escapeHtml(f.label)}</button>`).join('');
+  document.getElementById('fxToggles').innerHTML = (opts.toggles || []).map(norm).map(t =>
+    `<label class="fx-toggle"><input type="checkbox" data-k="${t.id}" onchange="setFxEffect('${t.id}', this.checked)"> ${escapeHtml(FX_TOGGLE_LABELS[t.id] || t.label)}</label>`).join('');
+  document.getElementById('fxMotion').onchange = (e) => setFx('motion', e.target.value);
+
+  const img = document.getElementById('fxFocusImg');
+  img.src = `/api/scene_image/${activeProject.id}/${sceneNumber}?t=${Date.now()}`;
+  img.onclick = (e) => {
+    const r = img.getBoundingClientRect();
+    setFx('focus_point', { x: +((e.clientX - r.left) / r.width).toFixed(3), y: +((e.clientY - r.top) / r.height).toFixed(3) });
+  };
+  document.getElementById('fxApplyAll').checked = false;
+  setFxStatus('', '');
+  syncFxControls();
+  document.getElementById('sceneEffectsModal').classList.remove('hidden');
+  scheduleFxPreview(0);
+}
+
+function closeSceneEffectsModal() {
+  document.getElementById('sceneEffectsModal')?.classList.add('hidden');
+  const v = document.getElementById('fxPreviewVideo');
+  if (v) v.pause();
+}
+
+function setFx(key, value) {
+  fxState.value[key] = value;
+  syncFxControls();
+  scheduleFxPreview();
+}
+
+function setFxEffect(key, value) {
+  fxState.value.effects[key] = value;
+  syncFxControls();
+  scheduleFxPreview();
+}
+
+function syncFxControls() {
+  const v = fxState.value;
+  document.getElementById('fxMotion').value = v.motion;
+  const speedRampEl = document.getElementById('fxSpeedRamp');
+  if (speedRampEl) speedRampEl.value = v.speed_ramp || 'none';
+  document.querySelectorAll('#fxStrength .fx-seg').forEach(b => b.classList.toggle('active', b.dataset.v === v.motion_strength));
+  document.querySelectorAll('#fxFilters .fx-chip').forEach(b => b.classList.toggle('active', b.dataset.v === (v.effects.filter || 'none')));
+  document.querySelectorAll('#fxToggles input').forEach(i => { i.checked = Boolean(v.effects[i.dataset.k]); });
+  const dot = document.getElementById('fxFocusDot');
+  dot.style.left = `${v.focus_point.x * 100}%`;
+  dot.style.top = `${v.focus_point.y * 100}%`;
+  const usesFocus = ['focus', 'zoom_in', 'zoom_out'].includes(v.motion) || v.effects.focus_blur;
+  document.getElementById('fxFocusHint').textContent = usesFocus
+    ? 'Click the image to set the focus point.'
+    : 'Focus point is used by Focus, Zoom in/out and Focus blur.';
+  dot.classList.toggle('dim', !usesFocus);
+}
+
+function setFxStatus(text, color) {
+  const el = document.getElementById('fxStatus');
+  if (el) { el.textContent = text; el.style.color = color || ''; }
+}
+
+function scheduleFxPreview(delay = 350) {
+  clearTimeout(fxState.previewTimer);
+  fxState.previewTimer = setTimeout(renderFxPreview, delay);
+}
+
+async function renderFxPreview() {
+  const seq = ++fxState.previewSeq;
+  const busy = document.getElementById('fxPreviewBusy');
+  busy.classList.remove('hidden');
+  try {
+    const res = await fetch('/api/scene-effect-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ project_id: activeProject.id, scene: fxState.scene, seconds: 2.5 }, fxState.value))
+    });
+    if (seq !== fxState.previewSeq) return;
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setFxStatus(`Preview unavailable: ${d.detail || res.status}`, '#f87171');
+      return;
+    }
+    const url = URL.createObjectURL(await res.blob());
+    if (fxState.previewUrl) URL.revokeObjectURL(fxState.previewUrl);
+    fxState.previewUrl = url;
+    const v = document.getElementById('fxPreviewVideo');
+    v.src = url;
+    v.play().catch(() => {});
+    setFxStatus('', '');
+  } catch (err) {
+    if (seq === fxState.previewSeq) setFxStatus(`Preview unavailable: ${err.message}`, '#f87171');
+  } finally {
+    if (seq === fxState.previewSeq) busy.classList.add('hidden');
+  }
+}
+
+async function saveSceneEffects(andRerender) {
+  if (!activeProject) return;
+  const applyAll = document.getElementById('fxApplyAll').checked;
+  setFxStatus('Saving...', '#38bdf8');
+  try {
+    const res = await fetch(`/api/projects/${activeProject.id}/scenes/${fxState.scene}/effects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({}, fxState.value, { apply_to_all: applyAll }))
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setFxStatus(`❌ ${data.detail || 'Could not save'}`, '#ef4444');
+      return;
+    }
+    // Reflect the saved values locally (the API may return the updated project)
+    if (data.project) {
+      activeProject = data.project;
+    } else if (applyAll) {
+      activeProject.scene_defaults = JSON.parse(JSON.stringify(fxState.value));
+      (activeProject.scenes || []).forEach(sc => { delete sc.motion; delete sc.motion_strength; delete sc.focus_point; delete sc.effects; });
+    } else {
+      const sc = activeProject.scenes.find(x => x.scene_number === fxState.scene);
+      if (sc) Object.assign(sc, JSON.parse(JSON.stringify(fxState.value)));
+    }
+    renderModalScenes();
+    setFxStatus(`✓ Saved${applyAll ? ' for all scenes' : ''}${andRerender ? '. Re-rendering…' : '. Click Re-render to apply.'}`, '#10b981');
+    if (andRerender) {
+      closeSceneEffectsModal();
+      handleRerenderModal();
+    }
+  } catch (err) {
+    setFxStatus(`❌ ${err.message}`, '#ef4444');
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Auto-refresh when the server has newer dashboard code, so an open tab never keeps
+// running stale JavaScript (that is how "[object Object]" labels once appeared).
+// Reloads only while the tab is idle: no modal open, nothing generating, no unsaved edit.
+// ---------------------------------------------------------------------------
+(function watchUiBuild() {
+  const current = document.querySelector('meta[name="ui-build"]')?.content;
+  if (!current) return;
+  // Unsaved text anywhere (e.g. edited scene narration, then clicked away) blocks the reload
+  const hasUnsavedText = () => [...document.querySelectorAll('textarea, input[type="text"], input:not([type])')]
+    .some(el => el.offsetParent !== null && el.value !== el.defaultValue);
+  const idle = () =>
+    !document.querySelector('.modal:not(.hidden), [id$="Modal"]:not(.hidden)') &&
+    !(currentProjects || []).some(p => p.status === 'in_progress') &&
+    !document.activeElement?.matches?.('input, textarea, select, [contenteditable]') &&
+    !hasUnsavedText() &&
+    !(document.getElementById('addSceneForm') && !document.getElementById('addSceneForm').classList.contains('hidden')) &&
+    !(typeof clipJobPollers !== 'undefined' && Object.keys(clipJobPollers).length);
+  setInterval(async () => {
+    try {
+      const res = await fetch(`/api/ui-build?t=${Date.now()}`);
+      if (!res.ok) return;
+      const { build } = await res.json();
+      if (build && build !== current && idle()) location.reload();
+    } catch (e) { /* server restarting; try again next tick */ }
+  }, 20000);
+})();

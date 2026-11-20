@@ -45,8 +45,8 @@ def _read() -> Dict[str, Any]:
                 return data
         except Exception:
             pass
-    # Migration from the single-channel layout
-    data = {"default": "weaponxlabs", "channels": {"weaponxlabs": dict(KNOWN["weaponxlabs"])}}
+    # Migration from the single-channel layout (ensure all KNOWN channels are registered)
+    data = {"default": "weaponxlabs", "channels": {k: dict(v) for k, v in KNOWN.items()}}
     legacy_id = getattr(config, "YOUTUBE_TARGET_CHANNEL_ID", "")
     if legacy_id and legacy_id != KNOWN["weaponxlabs"]["id"]:
         data["channels"]["weaponxlabs"]["id"] = legacy_id

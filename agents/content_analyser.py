@@ -130,6 +130,21 @@ class ContentAnalyserAgent:
     def __init__(self):
         self.name = self.AGENT_NAME
 
+    @staticmethod
+    def _ranked_list_description(topic: str) -> Optional[str]:
+        """'1. Puma IFV (Germany, 2015) – 30 mm autocannon, 6 soldiers' per item of a pasted ranked list."""
+        from agents import ranked_poster
+        if not ranked_poster.is_ranked_list(topic or ""):
+            return None
+        rows = []
+        for it in ranked_poster.parse_ranked_list(topic)["items"]:
+            sp = it["specs"]
+            spec = ", ".join(x for x in (ranked_poster._tidy(sp.get("main armament") or sp.get("armament") or ""),
+                                         ranked_poster._tidy(sp.get("infantry capacity") or sp.get("crew") or "")) if x)
+            yr = f", {it['year']}" if it.get("year") else ""
+            rows.append(f"{it['rank']}. {it['name']} ({it['country']}{yr})" + (f" – {spec}" if spec else ""))
+        return "\n".join(rows)
+
     def _clean_subject_name(self, topic: str) -> str:
         """Strips emojis, subtitle pipes, and noise from topic to produce a clean subject name."""
         text = str(topic or "")
@@ -255,6 +270,18 @@ class ContentAnalyserAgent:
                                   f"every number is traceable to the research. Notes: {brief['grounding_notes'][:3]}",
                 })
 
+        # Step 4c: a scene of a few words ("As of April 2026,") flashes by in ~1 s and wastes an image;
+        # merge it into its neighbour before images are chosen.
+        if not is_weaponx_lab_static:
+            merged, n_before = self._merge_tiny_scenes(script_payload.get("scenes") or []), len(script_payload.get("scenes") or [])
+            if len(merged) < n_before:
+                script_payload["scenes"] = merged
+                corrections_applied.append({
+                    "check": "Scene pacing (no 1-second scenes)",
+                    "issue": f"{n_before - len(merged)} scene(s) under {self.MIN_SCENE_WORDS} words.",
+                    "correction": f"Merged into neighbouring scenes ({n_before} -> {len(merged)} scenes).",
+                })
+
         scenes = script_payload["scenes"]
         corrected_full_text = " ".join(s["narration"] for s in scenes)
         word_count = len(corrected_full_text.split())
@@ -377,6 +404,40 @@ class ContentAnalyserAgent:
         except Exception as e:
             print(f"[{self.AGENT_NAME}] AI scriptwriter skipped: {e}")
             return None
+
+    MIN_SCENE_WORDS = 5  # ~1.5 s of speech at Shorts pace
+
+    @classmethod
+    def _merge_tiny_scenes(cls, scenes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merges scenes with fewer than MIN_SCENE_WORDS narration words into the next scene
+        (the last one into the previous). Scenes without narration (music/beat edits) are left alone."""
+        if len(scenes) < 2 or not all(str(s.get("narration") or "").strip() for s in scenes):
+            return scenes
+        out: List[Dict[str, Any]] = []
+        carry: Optional[Dict[str, Any]] = None
+        for sc in scenes:
+            sc = dict(sc)
+            if carry is not None:
+                sc["narration"] = f"{carry['narration'].strip()} {sc['narration'].strip()}"
+                sc["voiceover_text"] = sc["narration"]
+                sc["duration_seconds"] = round(float(sc.get("duration_seconds") or 0) + float(carry.get("duration_seconds") or 0), 2)
+                carry = None
+            if len(sc["narration"].split()) < cls.MIN_SCENE_WORDS:
+                carry = sc
+                continue
+            out.append(sc)
+        if carry is not None:
+            if out:
+                prev = out[-1]
+                prev["narration"] = f"{prev['narration'].strip()} {carry['narration'].strip()}"
+                prev["voiceover_text"] = prev["narration"]
+                prev["duration_seconds"] = round(float(prev.get("duration_seconds") or 0) + float(carry.get("duration_seconds") or 0), 2)
+            else:
+                out.append(carry)
+        for i, sc in enumerate(out, start=1):
+            sc["scene_number"] = i
+            sc["scene_id"] = i
+        return out
 
     @staticmethod
     def _apply_brief(script_payload: Dict[str, Any], brief: Dict[str, Any], duration: float) -> Dict[str, Any]:
@@ -559,23 +620,37 @@ class ContentAnalyserAgent:
 
         # WEAPONX LAB MODE: Specifically 10-second 9:16 Short with static channel-style hero image
         if is_weaponx_lab and duration == 10.0:
-            # Craft punchy, grammatically complete 10-14 word sentences for 150-165 WPM pacing
-            if any(w in topic_lower for w in ["submachine", "smg", "pdw"]):
+            # Craft punchy, grammatically complete 10-14 word sentences for 150-165 WPM pacing.
+            # Match on the SUBJECT, whole words only: matching the whole pasted request let "pla" hit
+            # "platform" and gave a Top-10 IFV list China's rifle-arsenal intro.
+            subj = clean_name.lower()
+            has = lambda *words: any(re.search(rf"\b{re.escape(w)}\b", subj) for w in words)
+            from agents import ranked_poster as _rp, evolution_poster as _ev
+            if _rp.is_ranked_list(topic):
+                _items = _rp.parse_ranked_list(topic)["items"]
+                first, last = _items[0], _items[-1]
+                short_hook = f"Ranked: the {len(_items)} {clean_name.replace('Top ' + str(len(_items)) + ' ', '')}."
+                core_fact = (f"From the {first['name']} ({first['country']}) to the {last['name']} ({last['country']}): "
+                             f"main armament and troop capacity for each.")
+            elif _ev.is_evolution_prompt(topic):
+                short_hook = f"{clean_name}: from historical roots to their modern counterparts."
+                core_fact = "Every model, service year and photo is checked against Wikipedia."
+            elif has("submachine", "smg", "pdw"):
                 short_hook = "From close-quarters combat to elite special forces: this is the ultimate submachine gun breakdown."
                 core_fact = "Engineered for blistering rates of fire and tactical mobility, here are the world's top SMGs."
-            elif any(w in topic_lower for w in ["chinese", "pla", "qbz"]):
+            elif has("chinese", "pla", "qbz"):
                 short_hook = "From the standard QBZ-191 assault rifle to high-caliber snipers: this is China's infantry arsenal."
                 core_fact = "Equipped with advanced optics and modular calibers, the PLA's 2026 firearms deliver lethal precision."
-            elif any(w in topic_lower for w in ["pistol", "handgun", "sidearm"]):
+            elif has("pistol", "pistols", "handgun", "handguns", "sidearm", "sidearms"):
                 short_hook = "From the iconic M1911 to the modern SIG M17: these are the world's greatest service pistols."
                 core_fact = "Tested under the harshest battlefield conditions, sidearms remain a soldier's ultimate last line of defense."
-            elif any(w in topic_lower for w in ["ak", "kalashnikov"]):
+            elif has("ak", "ak-47", "ak47", "kalashnikov"):
                 short_hook = "From the legendary AK-47 to the modern AK-12: this is the Kalashnikov global evolution."
                 core_fact = "With over one hundred million rifles built, the Kalashnikov defines global infantry warfare."
-            elif any(w in topic_lower for w in ["missile", "hypersonic"]):
+            elif has("missile", "missiles", "hypersonic"):
                 short_hook = "Traveling up to twenty times the speed of sound, hypersonic missiles are rewriting global defense."
                 core_fact = "Unstoppable maneuverability and kinetic velocity leave modern missile defense systems completely obsolete."
-            elif any(w in topic_lower for w in ["jet", "fighter", "stealth", "bomber"]):
+            elif has("jet", "jets", "fighter", "fighters", "stealth", "bomber", "bombers"):
                 short_hook = "Dominating the skies with radar-evading geometry and supercruise: these are the ultimate combat jets."
                 core_fact = "Equipped with next-gen sensor fusion and thrust-vectoring engines, sixth-gen air superiority is here."
             else:
@@ -618,10 +693,10 @@ class ContentAnalyserAgent:
             })
             return {
                 "title": f"{clean_name}: WeaponX Lab Breakdown 🔥 #Shorts",
+                # Only genuine content: the user's list when given, otherwise the narration (no filler lines)
                 "description": (
-                    f"{short_hook} {core_fact}\n\n"
-                    f"{clean_name}: the key facts in 10 seconds.\n"
-                    "#Shorts #WeaponXLabs #MilitaryTech #Defense #Technology"
+                    (self._ranked_list_description(topic) or f"{short_hook} {core_fact}")
+                    + "\n\n#Shorts #WeaponXLabs #MilitaryTech #Defense"
                 ),
                 "tags": ["weaponx lab", clean_name.lower(), "shorts", "military", "defensetech"],
                 "scenes": scenes,
@@ -1121,6 +1196,13 @@ class ContentAnalyserAgent:
         - Each row: Country Flag + Bold Model Name (Year) + Country Name + Centered Side-Profile Weapon + 2 right-side bullet specs
         """
         t_low = f"{clean_name} {topic}".lower()
+        # Spelling variants users type: "Hand Guns", "side-arms" -> one keyword form
+        t_low = re.sub(r"\bhand[\s-]+guns?\b", "handguns", t_low)
+        t_low = re.sub(r"\bside[\s-]+arms?\b", "sidearms", t_low)
+        # Whole-word check: bare substrings misfire ("ak" in "breakdown"/"makarov", "pla" in "explained")
+        def has_word(*words: str) -> bool:
+            return any(re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", t_low) for w in words)
+        generic_rows_mismatch = False
 
         # Check if user provided explicit structured weapon rows in their prompt/topic
         user_items = self._extract_items_from_text(topic)
@@ -1212,7 +1294,9 @@ class ContentAnalyserAgent:
                 {"rank": "12", "name": "AKV-521", "year": "2022", "country": "Russia", "bullet_1": "Cartridge - 5.45×39", "bullet_2": "No. built - 6 to 7 units", "profile_style": "ak12_tactical", "query": "AK-12"},
             ]
         # 3. Service Pistols & Handguns (Only if primarily focused on handguns/pistols)
-        elif any(k in t_low for k in ["pistol", "handgun", "sidearm"]) and not any(k in t_low for k in ["rifle", "assault", "carbine", "machine gun", "smg", "sniper", "qbz", "qbu", "ak", "army guns", "chinese"]):
+        elif (any(k in t_low for k in ["pistol", "handgun", "sidearm", "revolver"])
+              and not has_word("rifle", "rifles", "assault", "carbine", "carbines", "machine gun", "machine guns", "smg",
+                               "sniper", "qbz", "qbu", "ak", "army guns", "chinese")):
             poster_title = "THE MOST POPULAR SERVICE PISTOLS AND THEIR CALIBERS"
             subtitle = "GLOBAL MILITARY & TACTICAL SIDEARMS COMPARISON"
             items = [
@@ -1285,6 +1369,14 @@ class ContentAnalyserAgent:
             else:
                 poster_title = topic.upper()
                 subtitle = f"WEAPONX LABS // {category.upper()} BREAKDOWN"
+                # This curated list is assault/service rifles. Under any other title ("Shotguns",
+                # "Sniper Rifles", "Hand Guns") it is simply wrong, so flag it; the WeaponX chart
+                # engine refuses to draw a flagged list instead of publishing the wrong weapons.
+                rifle_topic = (has_word("rifle", "rifles", "assault rifle", "assault rifles", "service rifle",
+                                        "service rifles", "battle rifle", "battle rifles", "carbine", "carbines")
+                               and not has_word("sniper", "marksman", "anti-materiel", "shotgun", "shotguns",
+                                                "machine gun", "machine guns", "pistol", "pistols", "handguns"))
+                generic_rows_mismatch = not rifle_topic
                 items = [
                     {"rank": "01", "name": "AK-47", "year": "1947", "country": "Soviet Union", "bullet_1": "Cartridge - 7.62×39 mm.", "bullet_2": "No. built - 75 million", "profile_style": "ak_wood", "query": "AK-47"},
                     {"rank": "02", "name": "M16A4", "year": "1964", "country": "United States", "bullet_1": "Cartridge - 5.56×45 NATO", "bullet_2": "No. built - 8 million", "profile_style": "rifle", "query": "M16 rifle"},
@@ -1319,6 +1411,7 @@ class ContentAnalyserAgent:
         )
 
         return {
+            "rows_match_topic": not generic_rows_mismatch,
             "poster_title": poster_title,
             "poster_subtitle": subtitle,
             "channel_handle": "@WeaponXLabs",

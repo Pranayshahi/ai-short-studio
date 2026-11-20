@@ -1,0 +1,293 @@
+"""
+A verified list of weapon systems for a broad WeaponX topic ("Modern Submarine Weapon Systems"),
+so the WeaponX chart always shows a list of real models like the 'Hand Guns' chart, even when
+Wikipedia has no "List of ..." page for the topic.
+
+Where names come from: the local LLM (Ollama) suggests candidate model NAMES only, and Wikipedia
+search adds more. Every name must resolve to a Wikipedia article about that kind of system, with a
+photo; facts (year, origin, type) come from the article's infobox, never from the model. At least
+5 verified rows are required; otherwise the caller falls back (verified hero photo).
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+# topic pattern -> chart kind (see ranked_poster.KINDS)
+_KIND_RULES: List[Tuple[str, str]] = [
+    (r"submarine weapon|torpedo|naval weapon|anti-ship|anti-submarine|ship.?(?:borne|launched) weapon|naval missile", "naval"),
+    (r"air defen[cs]e|surface-to-air|\bsam\b|anti-aircraft|missile defen", "air_defense"),
+    (r"missile|hypersonic|icbm|ballistic|cruise|rocket", "missile"),
+    (r"submarine|warship|destroyer|frigate|corvette|aircraft carrier|navy ship|naval ship|battleship", "warship"),
+    (r"fighter|jet|bomber|aircraft|helicopter|drone|uav|stealth plane|air force", "aircraft"),
+    (r"artillery|howitzer|mortar|mlrs|rocket launcher", "artillery"),
+    (r"tank|ifv|infantry fighting|apc|armou?red|combat vehicle", "vehicle"),
+    (r"rifle|pistol|handgun|gun|carbine|sniper|firearm|small arms", "firearm"),
+]
+
+
+def kind_for(topic: str) -> str:
+    t = (topic or "").lower()
+    for pat, kind in _KIND_RULES:
+        if re.search(pat, t):
+            return kind
+    return "missile"
+
+
+NAMES_SCHEMA = {"type": "object", "properties": {"models": {"type": "array", "items": {"type": "string"}}},
+                "required": ["models"]}
+
+
+def _llm_names(topic: str, n: int = 16) -> List[str]:
+    try:
+        from agents import script_writer
+        from app.automation import resources
+        if not script_writer.can_run():
+            return []
+        with resources.lease("ollama"):
+            if not script_writer.is_available():
+                return []
+            try:
+                data = script_writer._ollama(
+                    f"List {n} specific, real, well-known military systems that belong in a chart titled '{topic}'. "
+                    "Use the exact model names as Wikipedia titles them (e.g. 'Mark 48 torpedo', 'UGM-133 Trident II', "
+                    "'3M-54 Kalibr'). Only real systems in service or recently retired; no categories, no prototypes.",
+                    NAMES_SCHEMA, timeout=120)
+            finally:
+                script_writer._unload()  # free the model now, so music/clip engines aren't blocked
+        return [str(x).strip() for x in data.get("models") or [] if str(x).strip()][:n]
+    except Exception as e:
+        print(f"[TopicList] LLM names skipped: {e}")
+        return []
+
+
+# Extra Wikipedia searches per kind, so broad topics still yield enough verified models
+KIND_QUERIES = {
+    "naval": ["heavyweight torpedo", "lightweight torpedo", "submarine-launched cruise missile",
+              "submarine-launched ballistic missile", "anti-ship missile", "anti-submarine missile"],
+    "missile": ["cruise missile", "ballistic missile", "hypersonic missile", "anti-ship missile"],
+    "air_defense": ["surface-to-air missile system", "air defence system"],
+    "aircraft": ["fighter aircraft", "multirole combat aircraft", "attack helicopter"],
+    "warship": ["destroyer class", "attack submarine class", "frigate class"],
+    "artillery": ["self-propelled howitzer", "multiple rocket launcher"],
+    "vehicle": ["main battle tank", "infantry fighting vehicle"],
+}
+
+
+def _search_titles(topic: str, kind: str = "") -> List[str]:
+    from agents import equipment_catalog as ec
+    core = re.sub(r"\b(modern|systems?|the|top|best|most|powerful|world'?s?|of|weapons?)\b", " ", topic, flags=re.I)
+    titles: List[str] = []
+    for q in (topic, core.strip(), f"{core.strip()} weapon", *KIND_QUERIES.get(kind, [])):
+        if not q.strip():
+            continue
+        data = ec._get({"action": "query", "list": "search", "srsearch": q, "srlimit": 15})
+        for h in (data or {}).get("query", {}).get("search", []):
+            if h["title"] not in titles and not h["title"].lower().startswith(("list of", "category:")):
+                titles.append(h["title"])
+    return titles[:60]
+
+
+def _clean_type(raw: str) -> str:
+    """Infobox type without template code: '{{idp| *Cruise missile *Anti-ship ...' -> 'Cruise missile'."""
+    t = re.sub(r"\{\{[^|}]*\|", "", str(raw or ""))
+    t = re.sub(r"[{}\[\]]", "", t)
+    parts = [x.strip(" *-,;") for x in re.split(r"\*|<br\s*/?>|;", t) if x.strip(" *-,;")]
+    return re.sub(r"\s+", " ", parts[0] if parts else t).strip()
+
+
+_BULLET_ORDER = ["Range", "Speed", "Warhead", "No. built", "Cartridge", "Calibre", "Fire rate", "Weight",
+                 "Engine", "Guidance", "Length"]
+
+
+def _bullets(m: Dict[str, Any]) -> Tuple[str, str]:
+    """Two real specs from the article's infobox, like the reference chart ('Cartridge - 7.62x39 mm',
+    'No. built - 75 million'); type / service year only when the article has no usable specs."""
+    specs = m.get("specs") or {}
+    picks = [f"{k} - {specs[k]}" for k in _BULLET_ORDER if specs.get(k)][:2]
+    if len(picks) < 2:
+        typ = _clean_type(m.get("type") or "")
+        if len(typ) > 34:
+            typ = typ[:34].rsplit(" ", 1)[0]
+            typ = re.sub(r"\s+(?:and|or|with|of|for|the|a|an|to|in)$", "", typ)
+        for extra in ([f"Type - {typ}"] if typ else []) + ([f"In service - {m['year']}"] if m.get("year") else []):
+            if len(picks) < 2:
+                picks.append(extra)
+    picks += [""] * (2 - len(picks))
+    return picks[0], picks[1]
+
+
+# Platforms are not weapons: a "submarine weapon systems" chart must not list submarines or ships
+_EXCLUDE = {
+    # 'submarine' as the thing itself (not "anti-submarine" / "submarine-launched")
+    "naval": r"(?<![-\w])submarine(?!-)|\bclass\b|(?<![-\w])ship\b|vessel|aircraft carrier|destroyer|frigate|engine|turbofan",
+    "missile": r"\bclass\b|(?<![-\w])ship\b|(?<![-\w])submarine(?!-)|engine|turbofan|aircraft\s*$",
+    "air_defense": r"\bclass\b|(?<![-\w])ship\b|engine|radar\s*$",
+}
+
+
+def _is_kind(m: Dict[str, Any], kind: str, kind_re: str) -> bool:
+    """The article's infobox TYPE must say it's this kind of system (the lead text alone let in
+    'India and weapons of mass destruction' and 'Virginia-class submarine')."""
+    typ = str(m.get("type") or "")
+    if not typ or not m.get("image_url") or m["title"].lower().startswith(("list of", "category:")):
+        return False
+    if not re.search(kind_re, typ, re.I):
+        return False
+    # Events and incidents are not weapons ("2026 Minab school attack" is typed "missile strike")
+    if re.search(r"attack|strike|incident|bombing|massacre|battle|\bwar\b|operation|crisis|crash|shootdown|explosion|test\b", typ, re.I):
+        return False
+    # A weapon article states where it's from or when it entered service
+    if not (m.get("origin") or m.get("year")):
+        return False
+    ex = _EXCLUDE.get(kind)
+    return not (ex and re.search(ex, typ, re.I))
+
+
+SIDE_PROFILE_KINDS = ("missile", "naval")
+MIN_ELONGATION = 4.0  # measured: clean missiles/torpedoes 5-10; launcher tripods, pylons, trucks, crews 1.4-3.9
+
+
+def _elongation(img) -> float:
+    """How long-and-thin the cutout is along its own main axis (rotation-proof, so a diagonal missile counts)."""
+    import numpy as np
+    small = img.split()[3].resize((max(1, img.width // 2), max(1, img.height // 2)))
+    ys, xs = np.nonzero(np.asarray(small) > 40)
+    if len(xs) < 20:
+        return 0.0
+    ev = np.sort(np.linalg.eigvalsh(np.cov(np.vstack([xs, ys]).astype(float))))
+    return float(np.sqrt(ev[1] / max(ev[0], 1e-6)))
+
+
+def _profile_ok(img, kind: str) -> bool:
+    """Missiles/torpedoes are drawn as long side profiles (reference look): a cutout that isn't long and
+    thin is something else - a launcher on a tripod, a missile under an aircraft pylon, a camouflaged truck."""
+    if kind not in SIDE_PROFILE_KINDS:
+        return True
+    try:
+        return _elongation(img) >= MIN_ELONGATION
+    except Exception:
+        return True
+
+
+def _with_clean_photos(models: List[Dict[str, Any]], kind: str, max_rows: int, min_rows: int = 5) -> List[Dict[str, Any]]:
+    """Keeps (in order) models with a clean photo of the weapon itself, like the reference chart: clean
+    side-profile cutouts on white. Framed photos only fill up to the minimum row count when there aren't
+    enough cutouts. Models whose photos show people/aircraft/trucks/launchers are skipped (next model in)."""
+    import config
+    from pathlib import Path
+    from agents import evolution_poster as ev
+    cache = Path(config.OUTPUT_DIR) / "cache" / "evolution_photos"
+    cut_ok, framed_ok = [], []
+    for m in models:
+        if len(cut_ok) >= max_rows:
+            break
+        m["_kind"] = kind
+        try:
+            img, is_cut = ev.fetch_photo(m, cache)
+        except Exception:
+            img, is_cut = None, False
+        if img is None:
+            continue
+        if is_cut and _profile_ok(img, kind):
+            cut_ok.append(m)
+        elif not is_cut and ev._exterior_ok(img.convert("RGBA"), kind):
+            framed_ok.append(m)
+        else:
+            print(f"[TopicList] Skipping {m['title']}: no clean side-profile photo of the weapon itself")
+    keep = cut_ok[:max_rows] + framed_ok[: max(0, min_rows - len(cut_ok))]
+    order = {id(m): i for i, m in enumerate(models)}
+    return sorted(keep, key=lambda m: order[id(m)])[:max_rows]
+
+
+def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Optional[List[str]] = None,
+               exclude_titles: Optional[List[str]] = None) -> Dict[str, Any]:
+    """{'kind', 'rows', 'models'} with only Wikipedia-verified models, or {'error': ...}.
+    keep_titles: rows to keep (in this order) when re-building after feedback; exclude_titles: never use."""
+    from agents import equipment_catalog as ec
+    from agents import ranked_poster as rp
+    kind = kind_for(topic)
+    spec = rp.KINDS.get(kind, rp.KINDS["missile"])
+    kind_re, words = spec["kind_re"], spec["words"]
+    modern = bool(re.search(r"\bmodern|current|today|new(?:est)?\b", topic, re.I))
+    excluded = {t.lower() for t in (exclude_titles or [])}
+    verified: Dict[str, Dict[str, Any]] = {}
+    if keep_titles:
+        for t, m in ec.fetch_models([k for k in keep_titles if k.lower() not in excluded]).items():
+            if m.get("image_url"):
+                verified[t] = m
+
+    names = _llm_names(topic)
+    # 1) LLM names as exact Wikipedia titles (redirects followed), 2) fuzzy match for the rest
+    direct = ec.fetch_models(names) if names else {}
+    for m in direct.values():
+        if _is_kind(m, kind, kind_re):
+            verified.setdefault(m["title"], m)
+    matched_names = {m.get("requested_as") for m in direct.values()}
+    for name in names:
+        if len(verified) >= max_rows + 6 or name in matched_names:
+            continue
+        m = rp.match_article(name, words, kind)
+        if m and _is_kind(m, kind, kind_re):
+            verified.setdefault(m["title"], m)
+
+    if len(verified) < max_rows + 6:
+        titles = [t for t in _search_titles(topic, kind) if t not in verified]
+        for m in (ec.fetch_models(titles) if titles else {}).values():
+            if len(verified) >= max_rows + 10:
+                break
+            if _is_kind(m, kind, kind_re):
+                verified.setdefault(m["title"], m)
+
+    # every row carries a flag + country (reference style); never a row the user rejected
+    verified = {t: m for t, m in verified.items() if m.get("origin") and t.lower() not in excluded
+                and str(m.get("requested_as", "")).lower() not in excluded}
+    kept = [verified[t] for t in (keep_titles or []) if t in verified]
+    models = kept + [m for m in verified.values() if m not in kept]
+    if modern and not keep_titles:
+        # "Modern ...": newest systems first; WW2/early Cold War designs only if nothing newer exists
+        models.sort(key=lambda m: -(m.get("year") or 0))
+        recent = [m for m in models if (m.get("year") or 0) >= 1975]
+        models = recent + [m for m in models if m not in recent] if len(recent) < min_rows else recent
+    models = _with_clean_photos(models, kind, max_rows)
+    if len(models) < min_rows:
+        return {"error": f"Only {len(models)} verified models found for '{topic}' (need {min_rows}).", "kind": kind}
+    rows = []
+    for i, m in enumerate(models, 1):
+        b1, b2 = _bullets(m)
+        rows.append({"rank": i, "name": re.sub(r"\s*\([^)]*\)\s*$", "", m["title"]).strip(), "query": m["title"],
+                     "country": ec._country(m.get("origin") or "") if m.get("origin") else "",
+                     "year": m.get("year") or "", "bullet_1": b1, "bullet_2": b2})
+    return {"kind": kind, "rows": rows, "models": models}
+
+
+def make_poster(topic: str, out_path, cache_dir, keep_titles: Optional[List[str]] = None,
+                exclude_titles: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Renders the chart from the verified articles directly (re-searching each name could pick a
+    different article, e.g. an engine instead of the torpedo)."""
+    from agents import ranked_poster as rp
+    from agents import evolution_poster as ev
+    spec = build_rows(topic, keep_titles=keep_titles, exclude_titles=exclude_titles)
+    if spec.get("error"):
+        return spec
+    title = re.sub(r"\s+", " ", topic).strip().upper()
+    items, resolved = [], []
+    for r, m in zip(spec["rows"], spec["models"]):
+        m["_kind"] = spec["kind"]
+        it = {"rank": r["rank"], "name": r["name"], "country": r["country"], "year": str(r["year"] or ""),
+              "lookup": m["title"], "specs": {"_bullets": [r["bullet_1"], r["bullet_2"]]}}
+        items.append(it)
+        resolved.append((it, m))
+    parsed = {"title": title, "full_title": title, "items": items, "kind": spec["kind"]}
+    res = rp.render(parsed, resolved, out_path, cache_dir)
+    if res.get("error"):
+        return res
+    credits, seen = [], set()
+    for c in ev.photo_credits([{"historical": m, "modern": m} for _, m in resolved]):
+        if c["file"] not in seen:
+            seen.add(c["file"])
+            credits.append(c)
+    return {**res, "kind": spec["kind"], "title": title, "credits": credits, "items": [
+        {"rank": it["rank"], "name": it["name"], "country": it["country"], "year": it["year"], "article": m["title"],
+         "photo": m.get("image_file_used") or m.get("image_file"), "bullets": [b for b in it["specs"]["_bullets"] if b]}
+        for it, m in resolved]}

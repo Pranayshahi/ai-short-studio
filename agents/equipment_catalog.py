@@ -94,7 +94,7 @@ _YEAR = re.compile(r"\b(19[0-9]{2}|20[0-2][0-9])\b")
 def _clean(v: str) -> str:
     v = re.sub(r"<ref[^>]*/>|<ref[^>]*>.*?</ref>", "", v, flags=re.S)
     v = re.sub(r"\{\{(?:flag|flagicon|flagcountry)\|([^}|]+)[^}]*\}\}", r"\1", v, flags=re.I)
-    v = re.sub(r"\{\{(?:convert|cvt)\|([\d.,]+)\|([a-zA-Z]+)[^}]*\}\}", r"\1 \2", v, flags=re.I)
+    v = re.sub(r"\{\{(?:convert|cvt)\|([\d.,]+)\|([a-zA-Z/]+)[^}]*\}\}", r"\1 \2", v, flags=re.I)  # keeps km/h, m/s
     v = re.sub(r"\{\{[^{}]*\}\}", "", v)
     v = re.sub(r"\[\[(?:[^\]|]*\|)?([^\]]*)\]\]", r"\1", v)
     v = re.sub(r"<br\s*/?>", "; ", v)
@@ -140,6 +140,72 @@ def _weight_t(fb: Dict[str, str]) -> Optional[float]:
     return val if val and 3 <= val <= 80 else None
 
 
+_NATIONALITIES = {
+    "american": "United States", "u.s.": "United States", "us": "United States", "russian": "Russia", "soviet": "Russia",
+    "british": "United Kingdom", "french": "France", "german": "Germany", "chinese": "China", "israeli": "Israel",
+    "indian": "India", "ukrainian": "Ukraine", "turkish": "Turkey", "iranian": "Iran", "italian": "Italy",
+    "swedish": "Sweden", "norwegian": "Norway", "japanese": "Japan", "south korean": "South Korea",
+    "taiwanese": "Taiwan", "pakistani": "Pakistan", "brazilian": "Brazil", "spanish": "Spain", "polish": "Poland",
+    "european": "", "anglo-french": "United Kingdom", "franco-british": "France",
+}
+
+
+def _nationality(lead: str) -> str:
+    """'The BGM-109G Gryphon ... is a ... American ...' -> 'United States' (when the infobox has no origin)."""
+    m = re.search(r"\b(?:is|was) an? ([^.]{0,120})", lead or "", re.I)
+    text = (m.group(1) if m else (lead or "")[:160]).lower()
+    for adj in sorted(_NATIONALITIES, key=len, reverse=True):
+        if re.search(rf"(?<![a-z]){re.escape(adj)}(?![a-z])", text) and _NATIONALITIES[adj]:
+            return _NATIONALITIES[adj]
+    # "... developed by the United States Air Force" / "... built in Russia"
+    full = (lead or "")[:400]
+    m = re.search(r"\b(?:developed|designed|built|manufactured|produced|made|fielded)\b[^.]{0,40}?\b(?:by|in) (?:the )?"
+                  r"(United States|United Kingdom|Soviet Union|Russia|France|Germany|China|Israel|India|Ukraine|Turkey|"
+                  r"Iran|Italy|Sweden|Norway|Japan|South Korea|Taiwan|Pakistan|Brazil|Spain|Poland)", full)
+    if m:
+        return "Russia" if m.group(1) == "Soviet Union" else m.group(1)
+    return ""
+
+
+# Infobox fields worth a WeaponX bullet, in order of preference (label shown on the chart)
+_SPEC_FIELDS = [
+    ("range", "Range"), ("vehicle_range", "Range"), ("max_range", "Range"), ("effective_range", "Range"),
+    ("speed", "Speed"), ("max_speed", "Speed"), ("warhead", "Warhead"), ("warhead_weight", "Warhead"),
+    ("number", "No. built"), ("number_built", "No. built"), ("produced", "No. built"),
+    ("guidance", "Guidance"), ("engine", "Engine"), ("propellant", "Propellant"), ("cartridge", "Cartridge"),
+    ("calibre", "Calibre"), ("caliber", "Calibre"), ("rate", "Fire rate"), ("weight", "Weight"), ("length", "Length"),
+]
+
+
+_UNIT = r"(?:km/h|km|m/s|mph|nmi|mi|kg|lb|mm|cm|m|t|tonnes?|kN|rounds/min|rpm|kt)"
+_VALUE = re.compile(rf"((?:>|<|≈|~|at least |up to |over )?\d[\d,.]*(?:\s*[–-]\s*\d[\d,.]*)?\s*{_UNIT}\b|mach\s*\d+(?:\.\d+)?(?:\s*[–-]\s*\d+(?:\.\d+)?)?)", re.I)
+
+
+def _specs(fb: Dict[str, str]) -> Dict[str, str]:
+    """Clean 'Label - value' specs: only a number with a unit (or Mach / a plain count for No. built)."""
+    import html
+    out: Dict[str, str] = {}
+    for key, label in _SPEC_FIELDS:
+        if label in out or not fb.get(key):
+            continue
+        v = html.unescape(_clean(fb[key])).replace("\xa0", " ")
+        if re.search(r"\bvar(y|ies|iable)\b|classified|unknown", v, re.I):
+            continue
+        if label == "No. built":
+            m = re.search(r"\b(\d{1,3}(?:,\d{3})+|\d{2,7})\b", v)
+            val = m.group(1) if m else ""
+        elif label in ("Engine", "Guidance", "Propellant", "Cartridge"):
+            val = re.split(r";|\(|,", v)[0].strip()
+            val = val if 3 <= len(val) <= 32 else ""
+        else:
+            m = _VALUE.search(v)
+            val = re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
+            val = re.sub(r"(?i)^mach", "Mach", val)
+        if val:
+            out[label] = val
+    return out
+
+
 def _origin(fb: Dict[str, str]) -> str:
     o = _clean(fb.get("origin", "") or fb.get("place-of-origin", "") or fb.get("place_of_origin", ""))
     return re.split(r";|,|/| and ", o)[0].strip()
@@ -169,12 +235,14 @@ def fetch_models(titles: List[str], thumb: int = 640) -> Dict[str, Dict[str, Any
             m_bold = re.search(r"[^\n]*'''[^'\n]+'''", lead)
             lead = _clean(lead[m_bold.start():m_bold.start() + 600]) if m_bold else ""
             status = _clean(fb.get("status", "")).lower()
+            origin = _origin(fb) or _nationality(lead)
             out[pg["title"]] = {
                 "title": pg["title"],
                 "requested_as": back.get(pg["title"], pg["title"]),
                 "name": _clean(fb.get("name", "")) or pg["title"],
                 "year": year,
-                "origin": _origin(fb),
+                "origin": origin,
+                "specs": _specs(fb),
                 "calibre_mm": _calibre_mm(fb),
                 "weight_t": _weight_t(fb),
                 "type": _clean(fb.get("type", "")),

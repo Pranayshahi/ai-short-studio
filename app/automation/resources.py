@@ -36,7 +36,7 @@ SERVICES: Dict[str, Dict] = {
         "port": 8001,
         "start": [str(PROJECT_DIR / "scripts" / "start_acestep.sh")],
         "health": "http://127.0.0.1:8001/health",
-        "start_timeout": 240,
+        "start_timeout": 480,  # cold starts under memory pressure took >240 s (nightly runs failed)
         "min_free_pct": 35,   # ACE-Step grows to ~21 GB incl. swap after its first generation
     },
     "phosphene": {

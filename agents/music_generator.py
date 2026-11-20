@@ -140,6 +140,149 @@ class AIMusicGenerator:
                 "[2:a]bandpass=f=1200:width_type=h:w=500,volume=0.2,flanger=delay=10:depth=6[shimmer];"
             ),
             "mix_inputs": "[pad][drone][shimmer]"
+        },
+        "Sleep Music": {
+            "desc": "Slow ambient music and soft soundscapes for bedtime",
+            "tempo_bpm": 56,
+            "f0": 55, "f1": 174, "noise_color": "brown",
+            "filter": (
+                "[0:a]volume=0.65,tremolo=f=0.5:d=0.3,aecho=0.92:0.9:200|400:0.5|0.35[pad];"
+                "[1:a]lowpass=f=120,volume=0.35[drone];"
+                "[2:a]bandpass=f=528:width_type=h:w=200,volume=0.22,aecho=0.9:0.85:180:0.4[shimmer];"
+            ),
+            "mix_inputs": "[pad][drone][shimmer]"
+        },
+        "Flute Meditation": {
+            "desc": "Soft bamboo flute and traditional instrumental music",
+            "tempo_bpm": 64,
+            "f0": 130, "f1": 392, "noise_color": "pink",
+            "filter": (
+                "[0:a]volume=0.65,aecho=0.9:0.85:160|320:0.45|0.3[tanpura];"
+                "[1:a]lowpass=f=180,volume=0.25[breath];"
+                "[2:a]vibrato=f=4.8:d=0.25,volume=0.55,aecho=0.9:0.88:180|360:0.5|0.35[flute];"
+            ),
+            "mix_inputs": "[tanpura][breath][flute]"
+        },
+        "Deep Relaxation": {
+            "desc": "Atmospheric drones and gentle sound textures",
+            "tempo_bpm": 60,
+            "f0": 55, "f1": 220, "noise_color": "brown",
+            "filter": (
+                "[0:a]volume=0.7,tremolo=f=0.4:d=0.35,aecho=0.94:0.9:220|440:0.55|0.4[drone];"
+                "[1:a]lowpass=f=140,volume=0.4[warmth];"
+                "[2:a]bandpass=f=880:width_type=h:w=300,volume=0.2,flanger=delay=10:depth=5[texture];"
+            ),
+            "mix_inputs": "[drone][warmth][texture]"
+        },
+        "Binaural Beats": {
+            "desc": "Different frequencies played into each ear to create a perceived beat",
+            "tempo_bpm": 60,
+            "f0": 200, "f1": 206, "noise_color": "brown",
+            "filter": (
+                "[0:a]volume=0.65[left_f];"
+                "[1:a]lowpass=f=140,volume=0.3[pad];"
+                "[2:a]volume=0.65[right_f];"
+            ),
+            "mix_inputs": "[left_f][pad][right_f]"
+        },
+        "Raga Therapy": {
+            "desc": "Selected ragas and instrumental performances for relaxation and emotional engagement",
+            "tempo_bpm": 68,
+            "f0": 130, "f1": 293, "noise_color": "pink",
+            "filter": (
+                "[0:a]volume=0.75,flanger=delay=8:depth=4,aecho=0.88:0.82:150:0.4[sitar];"
+                "[1:a]lowpass=f=160,volume=0.4[tanpura];"
+                "[2:a]vibrato=f=5.0:d=0.25,volume=0.45,aecho=0.9:0.85:160:0.4[bansuri];"
+            ),
+            "mix_inputs": "[sitar][tanpura][bansuri]"
+        },
+        "Flute Healing": {
+            "desc": "528Hz Solfeggio healing flute melodies, crystal singing bowls, and chakra aura pads",
+            "tempo_bpm": 60,
+            "f0": 132, "f1": 528, "noise_color": "pink",
+            "filter": (
+                "[0:a]volume=0.72,vibrato=f=4.5:d=0.22,aecho=0.92:0.88:180|360:0.5|0.35[flute];"
+                "[1:a]lowpass=f=160,volume=0.38[pad];"
+                "[2:a]bandpass=f=1056:width_type=h:w=180,volume=0.22,aecho=0.9:0.85:220:0.45[bowl];"
+            ),
+            "mix_inputs": "[flute][pad][bowl]"
+        },
+        "Japanese Music": {
+            "desc": "Traditional Japanese Koto plucked strings, Shakuhachi bamboo flute, and Zen garden chimes",
+            "tempo_bpm": 62,
+            "f0": 146, "f1": 293, "noise_color": "pink",
+            "filter": (
+                "[0:a]volume=0.75,aecho=0.88:0.82:140|280:0.4|0.25[koto];"
+                "[1:a]lowpass=f=180,volume=0.32[zen];"
+                "[2:a]vibrato=f=4.8:d=0.28,volume=0.48,aecho=0.9:0.85:180:0.45[shakuhachi];"
+            ),
+            "mix_inputs": "[koto][zen][shakuhachi]"
+        },
+        "Tibet Music": {
+            "desc": "Deep Tibetan bronze singing bowls, Himalayan temple gongs, and overtone chant drones",
+            "tempo_bpm": 52,
+            "f0": 108, "f1": 216, "noise_color": "brown",
+            "filter": (
+                "[0:a]volume=0.78,aecho=0.94:0.9:240|480:0.55|0.4[bowls];"
+                "[1:a]lowpass=f=120,volume=0.42[drone];"
+                "[2:a]bandpass=f=432:width_type=h:w=200,volume=0.25,aecho=0.92:0.88:260:0.45[chime];"
+            ),
+            "mix_inputs": "[bowls][drone][chime]"
+        },
+        "Devotional": {
+            "desc": "Serene morning temple ambiance, harmonium reed chords, Bansuri/Sitar melody, and Manjira bells",
+            "tempo_bpm": 66,
+            "f0": 130, "f1": 261, "noise_color": "pink",
+            "filter": (
+                "[0:a]volume=0.75,aecho=0.88:0.82:150:0.38[harmonium];"
+                "[1:a]lowpass=f=170,volume=0.38[tanpura];"
+                "[2:a]vibrato=f=5.0:d=0.22,volume=0.45,aecho=0.9:0.85:160:0.4[flute];"
+            ),
+            "mix_inputs": "[harmonium][tanpura][flute]"
+        },
+        "Bhakti": {
+            "desc": "Soulful Indian Bhakti bhajan & kirtan rhythm with Tabla/Dholak Keherwa taal, Harmonium, and Kartal",
+            "tempo_bpm": 76,
+            "f0": 146, "f1": 293, "noise_color": "pink",
+            "filter": (
+                "[0:a]volume=0.78,tremolo=f=2.5:d=0.45,aecho=0.85:0.78:120:0.32[bhajan];"
+                "[1:a]lowpass=f=180,volume=0.42[tabla];"
+                "[2:a]vibrato=f=5.2:d=0.25,volume=0.45,aecho=0.88:0.82:140:0.35[lead];"
+            ),
+            "mix_inputs": "[bhajan][tabla][lead]"
+        },
+        "Raining": {
+            "desc": "Soothing natural rainfall patter, warm distant rolling thunder, and delicate raindrop piano",
+            "tempo_bpm": 58,
+            "f0": 110, "f1": 220, "noise_color": "pink",
+            "filter": (
+                "[0:a]volume=0.65,aecho=0.92:0.88:200|400:0.5|0.35[piano];"
+                "[1:a]lowpass=f=900,volume=0.48[rain];"
+                "[2:a]bandpass=f=660:width_type=h:w=220,volume=0.22,aecho=0.9:0.85:220:0.4[pads];"
+            ),
+            "mix_inputs": "[piano][rain][pads]"
+        },
+        "Sea Waves": {
+            "desc": "Rhythmic rolling ocean waves washing ashore with peaceful coastal horizon pads",
+            "tempo_bpm": 55,
+            "f0": 98, "f1": 196, "noise_color": "brown",
+            "filter": (
+                "[0:a]volume=0.68,tremolo=f=0.2:d=0.5,aecho=0.92:0.88:220|440:0.5|0.38[ocean_pad];"
+                "[1:a]lowpass=f=650,volume=0.5[surf];"
+                "[2:a]bandpass=f=587:width_type=h:w=240,volume=0.22,aecho=0.9:0.85:200:0.4[breeze];"
+            ),
+            "mix_inputs": "[ocean_pad][surf][breeze]"
+        },
+        "Andean Pan Flute": {
+            "desc": "Original South American Zampoña pan-pipes & Quena flute soaring melodies with acoustic guitar and Bombo pulse",
+            "tempo_bpm": 74,
+            "f0": 110, "f1": 330, "noise_color": "pink",
+            "filter": (
+                "[0:a]volume=0.78,vibrato=f=5.2:d=0.26,aecho=0.92:0.88:190|380:0.52|0.38[zampona];"
+                "[1:a]lowpass=f=170,volume=0.4[bombo];"
+                "[2:a]bandpass=f=660:width_type=h:w=300,volume=0.35,aecho=0.88:0.82:150:0.35[charango];"
+            ),
+            "mix_inputs": "[zampona][bombo][charango]"
         }
     }
 
@@ -169,7 +312,20 @@ class AIMusicGenerator:
         "Jazz": "Warm walking bass, mellow electric piano chords, smooth late-night groove",
         "Pop": "Upbeat punchy kick, bright synth plucks, catchy commercial summer groove",
         "Indian": "Resonant sitar and tanpura modal drone, hypnotic tabla rhythm, mystical aura",
-        "Ambient": "Spacious evolving synth pads, gentle celestial harmonics, deep calm drone"
+        "Ambient": "Spacious evolving synth pads, gentle celestial harmonics, deep calm drone",
+        "Sleep Music": "Slow ambient music and soft soundscapes for bedtime, warm soothing sub-pads, gentle celesta lullaby overtones",
+        "Flute Meditation": "Soft bamboo flute (Bansuri) and traditional instrumental meditation music, breathy woodwind phrases, gentle tanpura warmth",
+        "Deep Relaxation": "Atmospheric drones and gentle sound textures, evolving warm harmonic pads, soft ocean-breath shimmer",
+        "Binaural Beats": "True stereo Binaural Beats meditation (Left Ear 432Hz / Right Ear 438Hz Theta wave) layered with warm ambient soundscape pads",
+        "Raga Therapy": "Indian Classical Raga Therapy (Raag Yaman & Raag Darbari), expressive Sitar alap, soothing Bansuri bamboo flute, Tanpura harmonic drone",
+        "Flute Healing": "528Hz Solfeggio healing flute melodies, emotional expressive breathy woodwind, singing crystal bowls, warm chakra aura pad",
+        "Japanese Music": "Traditional Japanese Koto plucked strings, breathy Shakuhachi bamboo flute in Hirajoshi pentatonic scale, serene Kyoto Zen garden temple bells",
+        "Tibet Music": "Resonant Tibetan bronze singing bowls, deep Himalayan temple gongs, overtone meditation drone, peaceful monastery sanctuary",
+        "Devotional": "Sacred peaceful morning temple ambiance, warm harmonium reed chords, gentle Bansuri flute and Sitar melody, soft Manjira temple bells",
+        "Bhakti": "Soulful Indian Bhakti bhajan and kirtan instrumental rhythm, warm Harmonium melody, rhythmic Tabla and Dholak Keherwa groove, Kartal chimes",
+        "Raining": "Soothing natural rainfall patter, warm distant rolling thunder, delicate ambient felt-piano raindrop notes, cozy peaceful rain soundscape",
+        "Sea Waves": "Rhythmic rolling ocean waves washing onto shore, gentle receding surf foam, warm sunset horizon ambient pads, serene coastal sea breeze",
+        "Andean Pan Flute": "Original Highland Andean Pan Flute (Zampoña & Quena) soaring melodies inspired by classic pan-pipe ballads, warm acoustic guitar & charango arpeggios, deep Bombo legüero heartbeat drum, wide canyon echo"
     }
 
     STYLES = {
@@ -676,12 +832,15 @@ class AIMusicGenerator:
                 "duration": item.get("duration")
             })
 
-        # 1. Existing AI-generated tracks
-        for p in sorted(self.ai_music_dir.glob("*.wav"), key=os.path.getmtime, reverse=True)[:10]:
+        # 1. Existing AI-generated tracks (including newly generated Music Studio & ACE-Step Phonk tracks)
+        for p in sorted(self.ai_music_dir.glob("*.wav"), key=os.path.getmtime, reverse=True)[:25]:
+            raw_label = re.sub(r"^(?:ai_music_|acestep_|ai_)", "", p.stem)
+            raw_label = re.sub(r"_\d{9,}$", "", raw_label).replace("_", " ").strip().title() or p.stem
+            is_phonk = "phonk" in p.stem.lower()
             tracks.append({
                 "id": p.stem,
-                "name": f"AI Music: {p.stem.replace('ai_music_', '').replace('_', ' ').title()}",
-                "genre": "AI Procedural",
+                "name": f"{'🔥 Phonk: ' if is_phonk else 'AI Music: '}{raw_label}",
+                "genre": "Drift Phonk" if is_phonk else "AI Procedural",
                 "desc": "AI Synthesized Soundtrack (100% Free / Commercial Safe)",
                 "source": "ai_generated",
                 "filename": p.name,
@@ -887,6 +1046,8 @@ class AIMusicGenerator:
             if temp_out.exists() and temp_out.stat().st_size > 1000:
                 if temp_out != out_path:
                     temp_out.replace(out_path)
+                from app.agents.audio_master import master
+                master(str(out_path))  # -14 LUFS / -1 dBTP, same as the composer
                 return out_path
             else:
                 raise RuntimeError("Remixed video output file is missing or corrupted.")
@@ -1016,6 +1177,8 @@ class AIMusicGenerator:
         if temp_out.exists() and temp_out.stat().st_size > 1000:
             if temp_out != out_path:
                 temp_out.replace(out_path)
+            from app.agents.audio_master import master
+            master(str(out_path))  # -14 LUFS / -1 dBTP, same as the composer
             return out_path
         else:
             raise RuntimeError("Clean video output file is missing or corrupted.")

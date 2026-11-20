@@ -114,6 +114,19 @@ class VerifyVideoAgent:
         all_checks.extend(scene_check["checks"])
 
         # ------------------------------------------------------------------
+        # 6b. Final Render Guard: the finished FILE (format, sync, loudness, black frames, dead air,
+        #     captions match narration, name never split, pacing). Every failure is blocking.
+        # ------------------------------------------------------------------
+        try:
+            from agents import render_guard
+            guard_checks = render_guard.run(project_record)
+        except Exception as e:
+            guard_checks = [{"name": "Render guard", "stage": "render-guard", "passed": False, "blocking": True,
+                             "fix": None, "detail": f"guard error: {e}", "remediation": "Check agents/render_guard.py"}]
+        all_checks.extend(guard_checks)
+        guard_failed = [c for c in guard_checks if not c["passed"] and c.get("blocking", True)]
+
+        # ------------------------------------------------------------------
         # 7. YouTube metadata must not contain the creator's prompt (blocking)
         # ------------------------------------------------------------------
         try:
@@ -130,6 +143,7 @@ class VerifyVideoAgent:
             "detail": "Title, description and tags contain no request/instruction text." if meta_ok
                       else "; ".join(meta_problems),
             "remediation": None if meta_ok else "Re-run agents.youtube_metadata.clean_metadata on this project.",
+            "fix": None if meta_ok else "clean_metadata",
         })
 
         # ------------------------------------------------------------------
@@ -159,6 +173,10 @@ class VerifyVideoAgent:
         if not scene_check["passed"]:
             # Repeated pictures or a different model on screen must never be reported as PASSED
             qa_passed = False
+        if guard_failed:
+            # A defect in the finished file (bad audio, captions, sync, black frames...) is never PASSED
+            qa_passed = False
+            overall_score = min(overall_score, 79)
 
         status = "PASSED" if qa_passed else ("WARNING" if overall_score >= 65 else "FAILED")
 
@@ -193,6 +211,11 @@ class VerifyVideoAgent:
             },
             "all_checks": all_checks,
             "remediation_actions": remediation_actions,
+            # Failed checks the pipeline can repair automatically (see ShortsPipeline.auto_repair)
+            "auto_fixes": sorted({c["fix"] for c in all_checks if not c["passed"] and c.get("fix")}),
+            "blocking_failures": [f"{c['name']}: {c.get('detail', '')}" for c in all_checks
+                                  if not c["passed"] and (c.get("blocking") or c.get("fix") in ("replace_duplicates", "replace_scenes", "clean_metadata")
+                                                          or c in guard_failed)],
             # Backwards-compatible keys for web dashboard QA modal
             "stream_checks": video_check["stream_checks"],
             "subtitle_checks": audio_check["subtitle_checks"],
@@ -284,13 +307,15 @@ class VerifyVideoAgent:
         duration = 10.0 if is_wx else float(project_record.get("duration") or c_data.get("target_duration") or 25.0)
         wpm = round((word_count / max(duration, 5.0)) * 60, 1) if word_count else 0.0
         min_words = 8 if is_wx else 15
-        pacing_ok = (word_count >= min_words) and (70 <= wpm <= 240)
+        no_narration = project_record.get("with_voice") is False  # music-only Shorts have no spoken script
+        pacing_ok = no_narration or ((word_count >= min_words) and (70 <= wpm <= 240))
 
         checks.append({
             "name": "Content Analysis, Grammar & Speaking Rate (WPM)",
             "stage": "content-analyser",
             "passed": pacing_ok,
             "detail": (
+                "Music-only Short: no narration, speaking-rate check not applicable." if no_narration else
                 f"Verified {word_count} words @ {wpm} WPM for {duration}s target ({len(corrections)} analyzer checks/corrections applied)."
             ),
             "remediation": None if pacing_ok else f"Adjust script word count ({word_count} words) to fit {duration}s.",
@@ -509,13 +534,15 @@ class VerifyVideoAgent:
             dialogues = [line for line in content.splitlines() if line.startswith("Dialogue:")]
             subtitle_checks["ass_exists"] = True
             subtitle_checks["dialogue_events"] = len(dialogues)
-            subtitle_checks["passed"] = len(dialogues) > 0
+            subs_ok = len(dialogues) > 0 or not with_voice  # no narration -> no captions expected
+            subtitle_checks["passed"] = subs_ok
             checks.append({
                 "name": "Subtitle Track & Saliency Alignment (.ass)",
                 "stage": "subtitle-engine",
-                "passed": len(dialogues) > 0,
-                "detail": f"Verified {len(dialogues)} synced subtitle events in ASS file.",
-                "remediation": None if len(dialogues) > 0 else "Regenerate subtitle events.",
+                "passed": subs_ok,
+                "detail": (f"Verified {len(dialogues)} synced subtitle events in ASS file." if with_voice or dialogues
+                           else "Music-only Short: no narration, so no captions expected."),
+                "remediation": None if subs_ok else "Regenerate subtitle events.",
             })
         else:
             subtitle_checks["passed"] = True
@@ -553,11 +580,18 @@ class VerifyVideoAgent:
 
         hashes = []
         for sc in scenes:
+            if sc.get("title_card"):
+                continue  # car intro/outro cards are graphics, not scene pictures
             path = Path(str(sc.get("image_path") or ""))
             h = ImageGeneratorAgent._dhash(path) if path.exists() else None
             if h is not None:
                 hashes.append((sc.get("scene_number"), h))
         dup_pairs = [(a, b) for (a, ha), (b, hb) in combinations(hashes, 2) if bin(ha ^ hb).count("1") <= 8]
+        # A WeaponX static short shows one poster for its whole length, by design
+        statics = project_record.get("visual_records") or []
+        if scenes and (all(sc.get("visual_source") == "weaponx_lab_poster" for sc in scenes)
+                       or (statics and all(r.get("static_image") for r in statics))):
+            dup_pairs = []
         unique_ok = not dup_pairs
         checks.append({
             "name": "Scene Image Uniqueness (no repeated pictures)",
@@ -566,6 +600,8 @@ class VerifyVideoAgent:
             "detail": (f"All {len(hashes)} scene images are different." if unique_ok
                        else f"Scenes showing the same picture: {dup_pairs}"),
             "remediation": None if unique_ok else "Replace the repeated scene images (Add Image / Regenerate AI / Add Clip) and re-render.",
+            "fix": None if unique_ok else "replace_duplicates",
+            "dup_pairs": dup_pairs,
         })
 
         desigs = designators(subject_core(project_record.get("topic") or ""))
@@ -587,6 +623,8 @@ class VerifyVideoAgent:
             "detail": ((f"Every real photo names {desigs}." if desigs else "Topic names no specific model.") if subject_ok
                        else f"Scenes {wrong} use photos that never name {desigs} (likely a different model)."),
             "remediation": None if subject_ok else f"Replace scenes {wrong} with images of {subject_core(project_record.get('topic') or '')}.",
+            "fix": None if subject_ok else "replace_scenes",
+            "scenes_to_replace": wrong,
         })
 
         fallback = [sc.get("scene_number") for sc in scenes if sc.get("visual_source") == "procedural_verified"]

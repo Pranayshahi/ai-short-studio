@@ -135,6 +135,10 @@ class HindiVoiceAgent:
                 translated = None
 
         if translated is None:
+            # Local LLM (Ollama, free): a real translation of what each scene says
+            translated = self._translate_via_ollama(script_data, topic)
+
+        if translated is None:
             # Offline fallback (no LLM available)
             translated = self._translate_offline(script_data, topic)
 
@@ -194,6 +198,75 @@ class HindiVoiceAgent:
                 return new_script
         except Exception as e:
             print(f"[HindiVoiceAgent] Gemini API error: {e}")
+            return None
+
+    HINDI_SCHEMA = {"type": "object", "properties": {
+        "title": {"type": "string"},
+        "scenes": {"type": "array", "items": {"type": "object", "properties": {
+            "scene_number": {"type": "integer"}, "narration": {"type": "string"}},
+            "required": ["scene_number", "narration"]}}},
+        "required": ["title", "scenes"]}
+
+    def _translate_via_ollama(self, script_data: Dict[str, Any], topic: str) -> Optional[Dict[str, Any]]:
+        """Translates each scene with the local Ollama model (same one as the scriptwriter).
+        Returns None (offline templates are used) if Ollama can't run or the output isn't usable Hindi."""
+        try:
+            from agents import script_writer
+            from app.automation import resources
+            if not script_writer.can_run():
+                return None
+            src = script_data.get("scenes", [])
+            if not src:
+                return None
+            scenes_text = "\n".join(
+                f"Scene {i + 1}: {s.get('narration_orig') or s.get('narration', '')}" for i, s in enumerate(src))
+            prompt = (
+                "Translate this YouTube Shorts voiceover into natural, spoken Hindi (Devanagari script).\n"
+                f"Topic: {topic}\n"
+                "Rules: translate each scene's meaning faithfully - do not add facts, numbers or opinions. "
+                "Keep names, model designations and numbers exactly as written (e.g. F-35, T-90, 2026) in Latin script. "
+                "Keep each scene about as long as the English. Use everyday Hindi a viewer would hear on a news channel. "
+                f"Return exactly {len(src)} scenes, numbered like the input.\n\n"
+                f"SCENES:\n{scenes_text}"
+            )
+            with resources.lease("ollama"):
+                if not script_writer.is_available():
+                    return None
+                try:
+                    data = script_writer._ollama(prompt, self.HINDI_SCHEMA, timeout=180)
+                finally:
+                    script_writer._unload()  # free the model now, so music/clip engines aren't blocked
+            out = data.get("scenes") or []
+            if len(out) != len(src):
+                print(f"[HindiVoiceAgent] Ollama returned {len(out)} scenes for {len(src)}; using offline templates")
+                return None
+            new_scenes = []
+            for sc, tr in zip(src, out):
+                hi = str(tr.get("narration") or "").strip()
+                deva = len(re.findall(r"[\u0900-\u097F]", hi))
+                latin = len(re.findall(r"[A-Za-z]", hi))
+                if not hi or deva < 0.6 * (deva + latin):
+                    print("[HindiVoiceAgent] Ollama output is not mostly Hindi; using offline templates")
+                    return None
+                # Every number in the English must survive the translation
+                en = sc.get("narration_orig") or sc.get("narration", "")
+                if any(n not in hi for n in re.findall(r"\d[\d,.]*\d|\d", en)):
+                    print(f"[HindiVoiceAgent] A number was lost in translation ({en!r}); using offline templates")
+                    return None
+                c = dict(sc)
+                c["narration_orig"] = en
+                c["narration_hindi"] = hi
+                c["narration"] = hi
+                new_scenes.append(c)
+            new_script = dict(script_data)
+            new_script["title_hindi"] = str(data.get("title") or "").strip() or script_data.get("title", topic)
+            new_script["scenes"] = new_scenes
+            new_script["language"] = "hi"
+            new_script["translation_mode"] = f"ollama:{script_writer.MODEL}"
+            print(f"[HindiVoiceAgent] Translated {len(new_scenes)} scenes with local {script_writer.MODEL}")
+            return new_script
+        except Exception as e:
+            print(f"[HindiVoiceAgent] Ollama translation skipped: {e}")
             return None
 
     def _translate_offline(self, script_data: Dict[str, Any], topic: str) -> Dict[str, Any]:
@@ -305,8 +378,12 @@ class HindiVoiceAgent:
         with open(audio_file, "wb") as f:
             f.write(audio_bytes)
 
+        # Phrase-aware captions: restore punctuation (incl. the danda) so cues end at sentence ends
+        from app.agents import caption_chunker
+        caption_chunker.prepare(words, full_text, [script_data.get("topic")])
+
         # Generate standard SRT
-        srt_content = submaker.get_srt()
+        srt_content = caption_chunker.to_srt(words) if words else submaker.get_srt()
         with open(srt_file, "w", encoding="utf-8") as f:
             f.write(srt_content)
 
@@ -354,12 +431,11 @@ class HindiVoiceAgent:
 
         events = []
         # Group words into 3-5 word chunks for optimal readability
-        chunk_size = 4
-        for i in range(0, len(words), chunk_size):
-            chunk = words[i:i + chunk_size]
+        from app.agents.caption_chunker import chunk_words, display_text
+        for chunk in chunk_words(words, 4):
             start_td = timedelta(seconds=chunk[0]["start"])
             end_td = timedelta(seconds=chunk[-1]["end"] + 0.1)
-            text_str = " ".join(w["text"] for w in chunk)
+            text_str = " ".join(display_text(w) for w in chunk)
             start_str = timedelta_to_ass(start_td)
             end_str = timedelta_to_ass(end_td)
             events.append(f"Dialogue: 0,{start_str},{end_str},HindiBold,,0,0,0,,{text_str}")

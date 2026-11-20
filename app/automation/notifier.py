@@ -81,6 +81,63 @@ def approval_buttons(project_id: str) -> List[List[Dict[str, str]]]:
     ]]
 
 
+def send_video(
+    video_path: Path,
+    caption: str = "",
+    buttons: Optional[List[List[Dict[str, str]]]] = None,
+) -> Dict[str, Any]:
+    """
+    Uploads and sends a rendered MP4 Short directly to Telegram via sendVideo (multipart/form-data)
+    with inline Approve/Reject buttons, so the user can watch and approve on their phone.
+    """
+    results: Dict[str, Any] = {"telegram": None}
+    token, chat = _tg_creds()
+    if not (token and chat):
+        print(f"[Notifier] (Telegram not configured) Video ready: {video_path}")
+        return results
+    vpath = Path(video_path)
+    if not vpath.exists() or vpath.stat().st_size > 48 * 1024 * 1024:
+        return send(caption, buttons=buttons, title="Video Ready")
+
+    boundary = f"----AIShortsBoundary{int(os.urandom(4).hex(), 16)}"
+    parts: List[bytes] = []
+
+    def add_field(name: str, val: str):
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{val}\r\n".encode("utf-8"))
+
+    add_field("chat_id", chat)
+    if caption:
+        add_field("caption", caption[:1000])
+        add_field("parse_mode", "Markdown")
+    add_field("supports_streaming", "true")
+    if buttons:
+        add_field("reply_markup", json.dumps({"inline_keyboard": buttons}))
+
+    parts.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"video\"; filename=\"{vpath.name}\"\r\n"
+        f"Content-Type: video/mp4\r\n\r\n".encode("utf-8")
+    )
+    parts.append(vpath.read_bytes())
+    parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+
+    try:
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendVideo",
+            data=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "AIShortsStudio/2.1",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            r = json.loads(resp.read().decode("utf-8") or "{}")
+            results["telegram"] = "sent" if r.get("ok") else f"error: {r}"
+    except Exception as e:
+        results["telegram"] = f"failed: {e}"
+    return results
+
+
 def poll_decisions(handler: Callable[[str, str], str]) -> int:
     """
     Fetch new Telegram button presses and pass (action, project_id) to handler, which returns

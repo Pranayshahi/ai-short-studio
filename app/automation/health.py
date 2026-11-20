@@ -184,7 +184,7 @@ def daily_summary(send: bool = True) -> str:
         except ValueError:
             continue
     by = lambda *st: [p for p in recent if p.get("status") in st]
-    published = by("published", "approved_private")
+    published = by("published", "uploaded_private", "approved_private")
     pending = by("pending_approval", "awaiting_review")
     failed = by("failed")
     lines = [f"📊 Daily report · {datetime.now():%d %b %Y}",

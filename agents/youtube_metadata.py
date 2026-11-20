@@ -139,7 +139,7 @@ def clean_title(title: str, subject: str, source_prompt: Optional[str] = None) -
     t = " ".join(kept).strip(" :-–—|")
     t = re.sub(r"\s*#shorts\b", "", t, flags=re.I).strip()
     if len(t) < 6 or len(t) > 90 or is_prompt_like(t, source_prompt):
-        t = subject
+        t = re.sub(r"\s*#shorts\b", "", subject or "", flags=re.I).strip()
     return f"{t[:TITLE_MAX - 8].rstrip()} #Shorts"
 
 

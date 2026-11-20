@@ -265,10 +265,11 @@ def render_ass(
         return ""
 
     boxed = style["background"] == "box"
-    for i in range(0, len(words), n):
-        chunk = words[i:i + n]
-        next_start = words[i + n]["start"] if i + n < len(words) else None
-        tokens = [_escape(_transform_case(str(w["text"]), style["case"])) for w in chunk]
+    from app.agents.caption_chunker import chunk_words, display_text
+    chunks = chunk_words(words, n)
+    for ci, chunk in enumerate(chunks):
+        next_start = chunks[ci + 1][0]["start"] if ci + 1 < len(chunks) else None
+        tokens = [_escape(_transform_case(display_text(w), style["case"])) for w in chunk]
         style_name = style_for((chunk[0]["start"] + chunk[-1]["end"]) / 2.0)
         chunk_end = min(chunk[-1]["end"] + 0.18, next_start) if next_start else chunk[-1]["end"] + 0.25
         if boxed:

@@ -18,6 +18,7 @@ import uuid
 import math
 import base64
 import random
+import shutil
 import threading
 import urllib.parse
 from datetime import datetime
@@ -387,9 +388,13 @@ class ImageGeneratorAgent:
         scenes = content_analysis.get("scenes", [])
         target_dur = float(content_analysis.get("target_duration") or topic_research.get("target_duration") or 30.0)
 
-        # Only use single static poster mode if explicitly requested as 10s weaponx_lab poster
+        # Single static poster mode when requested as 10s weaponx_lab poster OR "A vs B vs C" comparison poster
+        from agents import comparison_poster as _cmp
+        is_vs_comparison = _cmp.is_comparison_prompt(clean_topic) and str(style).lower() != "car_edit"
         is_weaponx_lab_static = (
-            bool(image_data.get("is_weaponx_lab_static"))
+            is_vs_comparison
+            or str(style).lower() == "comparison"
+            or bool(image_data.get("is_weaponx_lab_static"))
             or (
                 (bool(image_data.get("is_weaponx_lab")) or str(style).lower() in ("weaponx_lab", "weaponx lab"))
                 and target_dur == 10.0
@@ -569,9 +574,11 @@ class ImageGeneratorAgent:
         accepted_real_images: Optional[List[str]] = None,
         visual_hint: str = "",
         topic_context: str = "",
-    ) -> Dict[str, Any]:
+        web_only: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """
         Attempts to acquire a verified image for a single scene.
+        web_only=True: only verified web photos are tried; returns None if none fits (no AI/procedural).
         If download or pixel inspection fails, logs a CHANGE_IMAGE directive and tries the next source.
         """
         attempts = 0
@@ -647,6 +654,8 @@ class ImageGeneratorAgent:
                 print(f"   🔄 [CHANGE_IMAGE] Scene {scene_num} candidate rejected at pixel check: {quality_info.get('reason')}")
 
         # (No re-framing of earlier scenes' pictures: every scene gets a different image.)
+        if web_only:
+            return None
 
         # 3. Fallback to generative AI with an OBJECT-ONLY prompt (weak free models turn
         #    people/"perspective"/"film still" wording into faces and props instead of the subject)
@@ -1426,10 +1435,28 @@ class ImageGeneratorAgent:
         clean_subj = subject_core(topic or prompt) or "military technology"
 
         # Detect Subject Category
+        # Artillery first: "self-propelled gun"/"field gun" would otherwise fall into firearms (pistol prompt),
+        # and plain "artillery" into tanks (main-battle-tank prompt). A scene prompt only counts when the
+        # topic itself isn't clearly another category (an IFV's "30 mm cannon" must stay a tank).
+        art_re = (r"\b(artillery|howitzers?|self-propelled (gun|artillery)|field guns?|mortars?|mlrs|himars|"
+                  r"multiple (launch )?rocket|rocket launchers? system|m777|m109|paladin|caesar|pzh ?2000|"
+                  r"k9 thunder|archer|krab|2s19|msta|2s7|pion|bm-21|katyusha|smerch|tornado-s|tos-1|pinaka|atmos)\b")
+        other_re = r"\b(tanks?|ifvs?|infantry fighting|apc|missiles?|hypersonic|rifles?|pistols?|jets?|fighter|warships?|submarines?)\b"
+        topic_l = f"{topic}".lower()
+        is_artillery = bool(re.search(art_re, topic_l)) or (
+            bool(re.search(art_re, f"{prompt}".lower())) and not re.search(other_re, topic_l))
         long_gun_words = ["rifle", "carbine", "ak-47", "ak47", "m4", "sniper", "shotgun", "machine gun",
                           "submachine gun", "assault", "battle rifle", "anti-materiel", "c7", "c8"]
         handgun_words = ["pistol", "beretta", "glock", "handgun", "revolver", "sidearm"]
-        if any(w in raw_combined for w in long_gun_words) and not any(w in f"{topic}".lower() for w in handgun_words):
+        if is_artillery:
+            category = "artillery"
+            # Positive-only wording: this free model has no negative prompt ("no crew" adds crew)
+            positive = (
+                f"Ground-level 9:16 vertical photograph of {clean_subj}, heavy artillery piece with long barrel "
+                f"elevated toward the sky, deployed in an open field, camouflage paint, muzzle smoke, empty scene, "
+                f"dramatic dusk lighting, photorealistic, sharp focus, no text, no watermarks"
+            )
+        elif any(w in raw_combined for w in long_gun_words) and not any(w in f"{topic}".lower() for w in handgun_words):
             category = "firearms_long"
             kind = "sniper rifle" if "sniper" in raw_combined else ("shotgun" if "shotgun" in raw_combined else "assault rifle")
             look = {"AR-15-pattern": "AR-15-pattern black carbine with rail, magazine, stock and optic"}.get(hint, "black rifle with stock, magazine and optic")
@@ -1476,6 +1503,18 @@ class ImageGeneratorAgent:
             positive = (
                 f"Spacecraft {clean_subj} in deep orbit, vibrant distant nebula, solar array reflection, "
                 f"deep space high-contrast lighting, 9:16 vertical full bleed, ultra-sharp detail, no text"
+            )
+        elif str(style).lower() == "car_edit" or any(w in raw_combined for w in [
+            "porsche", "bugatti", "ferrari", "lamborghini", "mclaren", "koenigsegg", "pagani",
+            "nissan", "gt-r", "skyline", "supra", "toyota", "bmw", "mercedes", "amg", "audi",
+            "corvette", "mustang", "challenger", "camaro", "aston martin", "lexus", "mazda", "rx-7",
+            "supercar", "hypercar", "sports car", "coupe", "roadster",
+        ]):
+            category = "automotive"
+            positive = (
+                f"Editorial automotive photography of {clean_subj} sports car on wet asphalt at golden dusk, "
+                f"glossy bodywork reflections, glowing LED headlights, dynamic three-quarter low angle, "
+                f"9:16 vertical full-bleed car edit frame, photorealistic 8k, no text, no watermarks"
             )
         else:
             category = "general"
@@ -2070,6 +2109,48 @@ class ImageGeneratorAgent:
             )
         }
 
+    def acquire_fresh_web_image(
+        self,
+        topic: str,
+        scene: Dict[str, Any],
+        scene_num: int,
+        dest_path: Path,
+        used_urls: Optional[set] = None,
+        existing_images: Optional[List[str]] = None,
+        style: str = "default",
+        max_attempts: int = 6,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        A NEW verified real photo for one scene (used when a scene is added after generation):
+        same source + topic-match + pixel + content checks as a full run, and it must differ from
+        every image already in the video. Web photos only (fast); None when nothing new fits.
+        """
+        clean_topic = subject_core(topic) or topic
+        keywords = [clean_topic.lower()] + [w for w in re.findall(r"[A-Za-z0-9-]{3,}", clean_topic.lower())]
+        desigs = designators(subject_core(clean_topic))
+        verified: List[Dict[str, Any]] = []
+        for cand in self._deep_search_images_with_provenance(clean_topic, keywords, limit=25):
+            src_ok, src_info = self._verify_image_source(cand)
+            if not src_ok:
+                continue
+            match_ok, score, reason = self._verify_topic_match(cand, clean_topic, keywords, desigs)
+            if not match_ok:
+                continue
+            cand.update(source_verification=src_info, topic_match_score=score, topic_match_reason=reason)
+            verified.append(cand)
+        verified.sort(key=lambda c: c.get("topic_match_score", 0), reverse=True)
+        tmp = Path(dest_path).with_name(Path(dest_path).stem + ".fresh.png")
+        rec = self._acquire_verified_scene_image(
+            scene, scene_num, clean_topic, keywords, verified, set(used_urls or set()), tmp, style,
+            change_image_events=[], max_attempts=max_attempts,
+            accepted_real_images=list(existing_images or []), web_only=True)
+        if not rec:
+            tmp.unlink(missing_ok=True)
+            return None
+        shutil.move(str(tmp), str(dest_path))
+        rec["image_path"] = str(dest_path)
+        return rec
+
     def generate_single_scene_image(
         self,
         prompt: str,
@@ -2382,11 +2463,49 @@ class ImageGeneratorAgent:
         # The user's request can arrive as the topic itself, as image_data.topic, or as the image prompt
         request_texts = [image_data.get("topic") or "", clean_topic or "", image_data.get("master_image_prompt") or "",
                          image_data.get("topic_subject") or ""]
+        # A pasted ranked list ("1. Puma IFV / Germany / - Main armament: ...") -> WeaponX ranked chart
+        # built from the user's own facts with real photos of each listed model
+        from agents import ranked_poster, comparison_poster
+        comp_text = next((t for t in request_texts if comparison_poster.is_comparison_prompt(t)), "")
+        if comp_text:
+            return self._acquire_comparison_poster(comp_text, dest_path)
+        ranked_text = next((t for t in request_texts if ranked_poster.is_ranked_list(t)), "")
+        if ranked_text:
+            return self._acquire_ranked_poster(ranked_text, dest_path)
         if self._use_verified_evolution_poster(request_texts, clean_topic, poster_spec):
             from agents import evolution_poster
             evo_text = next((t for t in request_texts if evolution_poster.is_evolution_prompt(t)), "")
             subject = evolution_poster.parse_prompt(evo_text)["topic"] if evo_text else (image_data.get("topic_subject") or clean_topic)
-            return self._acquire_evolution_poster(evo_text, subject, dest_path)
+            try:
+                return self._acquire_evolution_poster(evo_text, subject, dest_path)
+            except RuntimeError as e:
+                if evo_text:
+                    raise  # the user asked for an evolution chart explicitly: say why it can't be built
+                # A broad topic ("Modern Submarine Weapon Systems") has no Wikipedia model list. That used
+                # to FAIL the whole video. WeaponX charts are LISTS of weapons, so build a verified list of
+                # models for the topic (like the 'Hand Guns' chart); a single hero photo is the last resort.
+                print(f"   ↪️ [{self.AGENT_NAME}] {e} Building a verified list of {clean_topic} instead...")
+                try:
+                    return self._acquire_topic_list_poster(subject or clean_topic, dest_path)
+                except Exception as e2:
+                    print(f"   ↪️ [{self.AGENT_NAME}] Topic list chart unavailable ({e2}); "
+                          "using a verified photo of the subject as the WeaponX hero image.")
+                rec = self._acquire_verified_scene_image(
+                    scene, 1, clean_topic, keywords, verified_candidates, used_urls, dest_path, "weaponx",
+                    change_image_events)
+                rec["fallback_reason"] = str(e)
+                return rec
+        if poster_spec.get("rows_match_topic") is False:
+            # The only list available is the generic assault-rifle preset; drawing it under this title
+            # published 10 rifles as "HAND GUNS". Stop with an actionable message instead.
+            raise RuntimeError(
+                f"WeaponX chart: no verified model list for '{clean_topic}'. Paste a numbered list of 5-10 models "
+                f"(name, country, and spec lines such as 'Calibre: 9×19mm') as the topic to build it from real photos.")
+        rows = poster_spec.get("comparison_items") or []
+        if len(rows) >= 5:
+            real = self._acquire_firearm_photo_chart(poster_spec, rows, clean_topic, dest_path)
+            if real is not None:
+                return real
         gemini_prompt = (
             poster_spec.get("gemini_prompt")
             or image_data.get("master_image_prompt")
@@ -2411,10 +2530,12 @@ class ImageGeneratorAgent:
             "source_provider": "WeaponX Labs White-Background Multi-Row Chart Engine",
             "license": comp_meta.get("license", "WeaponX Labs Channel Visual Standard"),
             "author": "@WeaponXLabs Studio Engine",
-            "source_verified": True,
+            # Drawn stock sprites, not a photo of each listed model: never self-certify as verified
+            "source_verified": False,
             "topic_matched": True,
-            "topic_match_score": 99,
-            "topic_match_reason": f"Built @WeaponXLabs multi-row white-background weapon chart for '{clean_topic}' ({len(poster_spec.get('comparison_items', []))} rows)",
+            "topic_match_score": 60,
+            "topic_match_reason": (f"Drawn sprite chart for '{clean_topic}' ({len(poster_spec.get('comparison_items', []))} rows): "
+                                   "rows use generic drawings, not photos of each model (real-photo chart unavailable)"),
             "visual_quality": comp_meta.get(
                 "visual_quality",
                 {
@@ -2428,6 +2549,40 @@ class ImageGeneratorAgent:
             ),
             "attempts_taken": 1,
             "prompt": gemini_prompt,
+        }
+
+    def _acquire_firearm_photo_chart(self, poster_spec: Dict[str, Any], rows: List[Dict[str, Any]],
+                                     clean_topic: str, dest_path: Path) -> Optional[Dict[str, Any]]:
+        """WeaponX chart with a real Wikipedia/Commons photo of every listed model (None -> use the drawn chart)."""
+        from agents import ranked_poster
+        title = poster_spec.get("poster_title") or clean_topic
+        print(f"   🔥 [{self.AGENT_NAME}] Building WeaponX chart for '{clean_topic}' with a real photo of each model...")
+        try:
+            cache = Path(config.OUTPUT_DIR) / "cache" / "evolution_photos"
+            res = ranked_poster.make_poster_from_items(title, rows, Path(dest_path), cache, kind="firearm")
+        except Exception as e:
+            res = {"error": f"{type(e).__name__}: {e}"}
+        if res.get("error") or not res.get("photos"):
+            print(f"   ⚠️ [{self.AGENT_NAME}] Real-photo chart unavailable ({res.get('error') or 'no photos'}); using drawn chart.")
+            return None
+        return {
+            "scene_number": 1,
+            "image_path": str(dest_path),
+            "source": "weaponx_lab_poster",
+            "source_url": "https://commons.wikimedia.org",
+            "source_domain": "commons.wikimedia.org",
+            "source_provider": "WeaponX Labs chart (curated list, Wikimedia Commons photos)",
+            "license": "Photos CC/PD from Wikimedia Commons — see photo_credits",
+            "author": "@WeaponXLabs Studio Engine",
+            "source_verified": True,
+            "topic_matched": True,
+            "topic_match_score": 99,
+            "topic_match_reason": f"{res['rows']} rows for '{res['title']}', each with a photo of that exact model",
+            "ranked_items": res["items"],
+            "photo_credits": res["credits"],
+            "visual_quality": {"output_resolution": f"{self.target_width}x{self.target_height}", "passed": True, "photos": res["photos"]},
+            "attempts_taken": 1,
+            "prompt": f"{title}: " + "; ".join(r.get("name", "") for r in rows),
         }
 
     @staticmethod
@@ -2452,6 +2607,95 @@ class ImageGeneratorAgent:
         is_firearm_topic = bool(re.search(r"rifle|gun|pistol|firearm|carbine|ak-?47|kalashnikov|small arms|sniper|weapons? in",
                                           subject, re.I))
         return not is_firearm_topic
+
+    def _acquire_comparison_poster(self, text: str, dest_path: Path) -> Dict[str, Any]:
+        from agents import comparison_poster
+        print(f"   ⚔️ [{self.AGENT_NAME}] Building 'A vs B vs C' Head-to-Head Comparison Poster (real photos + specs)...")
+        cache = Path(config.OUTPUT_DIR) / "cache" / "evolution_photos"
+        res = comparison_poster.make_poster(text, Path(dest_path), cache)
+        if res.get("error"):
+            raise RuntimeError(f"Comparison poster: {res['error']}")
+        return {
+            "scene_number": 1,
+            "image_path": str(dest_path),
+            "source": "weaponx_lab_poster",
+            "source_url": "https://commons.wikimedia.org",
+            "source_domain": "commons.wikimedia.org",
+            "source_provider": "Head-to-Head Comparison Poster (Wikipedia specs, Wikimedia Commons photos)",
+            "license": "Photos CC/PD from Wikimedia Commons — see photo_credits",
+            "author": "AI Shorts Studio Comparison Engine",
+            "source_verified": True,
+            "topic_matched": True,
+            "topic_match_score": 99,
+            "topic_match_reason": f"{res['rows']}-way comparison poster for '{res['title']}' with real photos and specs",
+            "comparison_items": res["comparison_items"],
+            "winners": res.get("winners", {}),
+            "photo_credits": res["credits"],
+            "visual_quality": {"output_resolution": f"{self.target_width}x{self.target_height}", "passed": True, "photos": res["photos"]},
+            "attempts_taken": 1,
+            "prompt": text[:500],
+        }
+
+    def _acquire_ranked_poster(self, text: str, dest_path: Path) -> Dict[str, Any]:
+        from agents import ranked_poster
+        print(f"   🔥 [{self.AGENT_NAME}] Building WeaponX ranked chart from the user's list (real photos + flags)...")
+        cache = Path(config.OUTPUT_DIR) / "cache" / "evolution_photos"
+        res = ranked_poster.make_poster(text, Path(dest_path), cache)
+        if res.get("error"):
+            raise RuntimeError(f"WeaponX ranked chart: {res['error']}")
+        return {
+            "scene_number": 1,
+            "image_path": str(dest_path),
+            "source": "weaponx_lab_poster",
+            "source_url": "https://commons.wikimedia.org",
+            "source_domain": "commons.wikimedia.org",
+            "source_provider": "WeaponX Labs ranked chart (user's list, Wikimedia Commons photos)",
+            "license": "Photos CC/PD from Wikimedia Commons — see photo_credits",
+            "author": "@WeaponXLabs Studio Engine",
+            "source_verified": True,
+            "topic_matched": True,
+            "topic_match_score": 99,
+            "topic_match_reason": f"{res['rows']} ranked rows for '{res['title']}', each with a photo of that exact model",
+            "ranked_items": res["items"],
+            "photo_credits": res["credits"],
+            "visual_quality": {"output_resolution": f"{self.target_width}x{self.target_height}", "passed": True, "photos": res["photos"]},
+            "attempts_taken": 1,
+            "prompt": text[:500],
+        }
+
+    def _acquire_topic_list_poster(self, topic: str, dest_path: Path, keep_titles: Optional[List[str]] = None,
+                                   exclude_titles: Optional[List[str]] = None) -> Dict[str, Any]:
+        """WeaponX chart of 5-8 verified models for a broad topic (see agents/topic_weapon_list.py).
+        keep/exclude: rebuild after feedback, keeping the good rows and replacing the rejected ones."""
+        from agents import topic_weapon_list
+        print(f"   🔥 [{self.AGENT_NAME}] Building WeaponX list chart for '{topic}' (Wikipedia-verified models + photos)...")
+        cache = Path(config.OUTPUT_DIR) / "cache" / "evolution_photos"
+        res = topic_weapon_list.make_poster(topic, Path(dest_path), cache, keep_titles=keep_titles, exclude_titles=exclude_titles)
+        if res.get("error"):
+            raise RuntimeError(res["error"])
+        names = [it.get("name") for it in res.get("items") or []]
+        print(f"   ✓ [{self.AGENT_NAME}] {len(names)} verified models: {', '.join(names)}")
+        return {
+            "scene_number": 1,
+            "image_path": str(dest_path),
+            "source": "weaponx_lab_poster",
+            "source_url": "https://commons.wikimedia.org",
+            "source_domain": "commons.wikimedia.org",
+            "source_provider": "WeaponX Labs list chart (Wikipedia-verified models, Wikimedia Commons photos)",
+            "license": "Photos CC/PD from Wikimedia Commons — see photo_credits",
+            "author": "@WeaponXLabs Studio Engine",
+            "source_verified": True,
+            "topic_matched": True,
+            "topic_match_score": 97,
+            "topic_match_reason": f"{len(names)} {res.get('kind')} models for '{topic}', each with a photo of that exact model",
+            "list_chart": True,
+            "ranked_items": res["items"],
+            "photo_credits": res["credits"],
+            "visual_quality": {"output_resolution": f"{self.target_width}x{self.target_height}", "passed": True,
+                               "photos": res.get("photos")},
+            "attempts_taken": 1,
+            "prompt": f"{topic}: " + "; ".join(n for n in names if n),
+        }
 
     def _acquire_evolution_poster(self, user_prompt: str, clean_topic: str, dest_path: Path) -> Dict[str, Any]:
         from agents import evolution_poster
@@ -3253,7 +3497,7 @@ class ImageGeneratorAgent:
             "pistol", "handgun", "sidearm", "m1911", "glock", "beretta", "sig p", "makarov",
             "usp", "hi-power", "cz 75", "five-seven"
         ]
-        is_rifle_or_longarm = any(k in combined for k in ["rifle", "assault", "carbine", "qbz", "qbu", "qjs", "qjy", "qjz", "ak", "smg", "submachine", "sniper", "lmg", "gpmg", "hmg"])
+        is_rifle_or_longarm = bool(re.search(r"(?<![a-z0-9])(rifles?|assault|carbines?|qbz|qbu|qjs|qjy|qjz|ak|smg|submachine|sniper|lmg|gpmg|hmg)(?![a-z0-9])", combined))
         if (pstyle == "pistol" or any(k in combined for k in pistol_keywords)) and not is_rifle_or_longarm:
             if "1911" in combined or "makarov" in combined or "hi-power" in combined:
                 p = sprites_dir / "pistol_sprite_00.png"

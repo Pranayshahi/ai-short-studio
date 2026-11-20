@@ -24,6 +24,8 @@ CATEGORY_PROMPTS: Dict[str, List[str]] = {
     "aerospace": ["a photo of a fighter jet", "a photo of a military jet aircraft", "a photo of a jet airplane in flight"],
     "missiles": ["a photo of a missile", "a photo of a rocket launch", "a photo of a missile launcher"],
     "tanks": ["a photo of a tank", "a photo of an armored military vehicle"],
+    "artillery": ["a photo of an artillery howitzer", "a photo of a self-propelled artillery vehicle",
+                  "a photo of a multiple rocket launcher truck", "a photo of a large field cannon"],
     "naval": ["a photo of a warship", "a photo of a submarine", "a photo of an aircraft carrier ship at sea"],
     "space": ["a photo of a spacecraft", "a photo of a satellite", "a photo of outer space"],
 }
@@ -58,6 +60,15 @@ DECOY_PROMPTS: List[str] = [
     "a cartoon drawing",
     "a photo of a propeller airplane",   # e.g. the P-51 in a 'heritage flight' group photo of an F-22
 ]
+
+# Categories that genuinely look alike: a self-propelled howitzer IS a tracked armored vehicle and a
+# rocket-artillery truck IS a launcher. Don't let them veto each other (that rejected every real
+# artillery photo as "tank"/"missile launcher"); they still compete with every other category.
+LOOKALIKES: Dict[str, set] = {
+    "artillery": {"tanks", "missiles"},
+    "tanks": {"artillery"},
+    "missiles": {"artillery"},
+}
 
 _lock = threading.Lock()
 _model = None
@@ -112,7 +123,8 @@ def verify(image_path: str | Path, category: str, min_target_share: float = 0.45
         img = Image.open(image_path).convert("RGB")
         # Other categories are decoys too: a jet checked as "firearms" must lose to "fighter jet",
         # otherwise the closest firearm label wins by default (the C25/AK-47 class of mistake).
-        other_cats = {c: p for c, p in CATEGORY_PROMPTS.items() if c != category}
+        other_cats = {c: p for c, p in CATEGORY_PROMPTS.items()
+                      if c != category and c not in LOOKALIKES.get(category, ())}
         cross = [lbl for prompts in other_cats.values() for lbl in prompts]
         decoys = DECOY_PROMPTS + PEOPLE_PROMPTS + TOY_PROMPTS + cross
         labels = targets + decoys

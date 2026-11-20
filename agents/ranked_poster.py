@@ -76,7 +76,22 @@ def _simplify(name: str) -> List[str]:
     return [x for x in dict.fromkeys(o.strip() for o in out) if x]
 
 
-def match_article(name: str, category_words: str = "fighting vehicle") -> Optional[Dict[str, Any]]:
+# What a valid article must be about, per chart kind (a pistol chart must never accept a vehicle article)
+KINDS: Dict[str, Dict[str, str]] = {
+    "vehicle": {"words": "fighting vehicle", "kind_re": r"fighting vehicle|armou?red|infantry|tank|vehicle"},
+    "firearm": {"words": "pistol", "kind_re": r"pistol|handgun|revolver|firearm|semi-automatic|rifle|carbine|submachine|machine gun|shotgun"},
+    # Broad WeaponX topics (agents/topic_weapon_list.py): each row must be an article about this kind of system
+    "naval": {"words": "naval weapon", "kind_re": r"torpedo|missile|cruise|ballistic|naval mine|anti-ship|anti-submarine|"
+                                                  r"submarine-launched|SLBM|depth charge|close-in weapon|naval gun|vertical launch"},
+    "missile": {"words": "missile", "kind_re": r"missile|rocket|cruise|ballistic|hypersonic|glide vehicle|interceptor|munition"},
+    "aircraft": {"words": "military aircraft", "kind_re": r"aircraft|fighter|bomber|helicopter|unmanned|drone|interceptor|airlifter|gunship"},
+    "warship": {"words": "warship", "kind_re": r"submarine|ship|destroyer|frigate|corvette|aircraft carrier|cruiser|vessel|warship"},
+    "artillery": {"words": "artillery", "kind_re": r"howitzer|artillery|mortar|rocket launcher|multiple rocket|self-propelled|field gun"},
+    "air_defense": {"words": "air defence system", "kind_re": r"surface-to-air|air defen[cs]e|anti-aircraft|missile system|interceptor|SAM"},
+}
+
+
+def match_article(name: str, category_words: str = "fighting vehicle", kind: str = "vehicle") -> Optional[Dict[str, Any]]:
     """
     The Wikipedia article for a model name. Accepted only if the title or the article's opening text
     names the model, and the article is about a vehicle. Exact title matches rank first
@@ -96,12 +111,13 @@ def match_article(name: str, category_words: str = "fighting vehicle") -> Option
             if not m or not m.get("image_url") or t.lower().startswith("list of"):
                 continue
             text = f"{t} {m.get('lead', '')[:300]}"
-            named = mentions_any(text, desigs) if desigs else bool(words) and words[0].lower() in t.lower()
-            kind_ok = re.search(r"fighting vehicle|armou?red|infantry|tank|vehicle", f"{m.get('type', '')} {m.get('lead', '')}", re.I)
+            base = re.sub(r"\s*\([^)]*\)\s*$", "", t).strip().lower()
+            exact = base == q.lower()  # article titled exactly as the model ('CZ 75': no designator, no 3-letter word)
+            named = exact or (mentions_any(text, desigs) if desigs else bool(words) and words[0].lower() in t.lower())
+            kind_ok = re.search(KINDS.get(kind, KINDS["vehicle"])["kind_re"], f"{m.get('type', '')} {m.get('lead', '')}", re.I)
             if not (named and kind_ok):
                 continue
-            base = re.sub(r"\s*\([^)]*\)\s*$", "", t).strip().lower()
-            score = 3 if base == q.lower() else (2 if (mentions_any(t, desigs) if desigs else words[0].lower() in t.lower()) else 1)
+            score = 3 if exact else (2 if (mentions_any(t, desigs) if desigs else bool(words) and words[0].lower() in t.lower()) else 1)
             scored.append((score, -len(t), m))
         if scored:
             return max(scored, key=lambda x: (x[0], x[1]))[2]
@@ -124,9 +140,12 @@ def flag_image(country: str, cache_dir: Path, height: int = 34) -> Optional[Imag
     p = cache_dir / f"flag_{key}.png"
     if not p.exists():
         cache_dir.mkdir(parents=True, exist_ok=True)
-        for attempt in range(4):  # Commons throttles bursts; retry with back-off
+        # Commons throttles bursts (and sometimes resets connections outright); en.wikipedia's API serves
+        # the same Commons file info, so alternate between the two
+        apis = ["https://commons.wikimedia.org/w/api.php", "https://en.wikipedia.org/w/api.php"]
+        for attempt in range(4):
             try:
-                r = requests.get("https://commons.wikimedia.org/w/api.php", headers=ec.HEADERS, timeout=30, params={
+                r = requests.get(apis[attempt % 2], headers=ec.HEADERS, timeout=30, params={
                     "action": "query", "titles": f"File:{file}", "prop": "imageinfo", "iiprop": "url", "iiurlwidth": 120,
                     "format": "json", "formatversion": 2})
                 url = ((r.json()["query"]["pages"][0].get("imageinfo") or [{}])[0]).get("thumburl") if r.status_code == 200 else None
@@ -137,7 +156,7 @@ def flag_image(country: str, cache_dir: Path, height: int = 34) -> Optional[Imag
                         break
             except Exception:
                 pass
-            time.sleep(4 * (attempt + 1))
+            time.sleep(2 * (attempt + 1))
     if not p.exists():
         return None
     f = Image.open(p).convert("RGBA")
@@ -151,10 +170,13 @@ def _tidy(spec: str) -> str:
     s = re.sub(r"\s*\([^)]*\)", "", spec)
     s = re.sub(r",?\s*depending on (the )?variant.*$", "", s, flags=re.I)
     s = re.sub(r"\bapproximately\b", "approx.", s, flags=re.I)
+    s = re.sub(r"^Up to\b", "up to", s)
     return re.sub(r"\s+", " ", s).strip(" ,;")
 
 
 def _bullets(specs: Dict[str, str]) -> List[str]:
+    if specs.get("_bullets"):  # pre-written bullets (curated firearm lists: "Cartridge - 9×19mm", "No. built - ...")
+        return [b for b in specs["_bullets"] if b][:2]
     out = []
     arm = specs.get("main armament") or specs.get("armament")
     if arm:
@@ -203,7 +225,11 @@ def render(parsed: Dict[str, Any], resolved: List[Tuple[Dict[str, Any], Optional
         if model is not None:
             img, is_cut = ev.fetch_photo(model, cache_dir)
             if img is not None:
-                ev._paste_item(canvas, img, is_cut, 520, top + 30, 470, row_h - 44)
+                if parsed.get("kind") == "firearm":  # short, wide objects: use the full row height
+                    ev._paste_item(canvas, img, is_cut, 560, top + 10, 380, row_h - 22, shadow=False)
+                else:
+                    # Below the name/year and country lines (a framed photo used to cover "(1990)")
+                    ev._paste_item(canvas, img, is_cut, 520, top + 68, 470, row_h - 82)
                 placed += 1
         # Spec bullets, bottom right
         # Bullets may wrap to a second line (indented) instead of being cut off
@@ -220,13 +246,33 @@ def render(parsed: Dict[str, Any], resolved: List[Tuple[Dict[str, Any], Optional
     return {"path": str(out_path), "rows": len(rows), "photos": placed}
 
 
+def make_poster_from_items(title: str, rows: List[Dict[str, Any]], out_path: Path, cache_dir: Path,
+                           kind: str = "firearm") -> Dict[str, Any]:
+    """
+    Same chart from an already-structured list (the curated WeaponX rows: name, year, country,
+    bullet_1, bullet_2, query). Each row still needs a real photo of that exact model, or nothing is drawn.
+    """
+    items = [{"rank": int(r.get("rank") or i), "name": r["name"], "country": r.get("country", ""),
+              "year": str(r.get("year") or ""), "lookup": r.get("query") or r["name"],
+              "specs": {"_bullets": [r.get("bullet_1", ""), r.get("bullet_2", "")]}}
+             for i, r in enumerate(rows, 1) if r.get("name")]
+    return _build({"title": title, "full_title": title, "items": items}, out_path, cache_dir, kind)
+
+
 def make_poster(text: str, out_path: Path, cache_dir: Path) -> Dict[str, Any]:
-    parsed = parse_ranked_list(text)
+    return _build(parse_ranked_list(text), out_path, cache_dir, "vehicle")
+
+
+def _build(parsed: Dict[str, Any], out_path: Path, cache_dir: Path, kind: str) -> Dict[str, Any]:
     if len(parsed["items"]) < 5:
         return {"error": "Could not read a numbered list of at least 5 items."}
+    parsed["kind"] = kind
+    words = KINDS.get(kind, KINDS["vehicle"])["words"]
     resolved, missing = [], []
     for it in parsed["items"]:
-        m = match_article(it["name"])
+        m = match_article(it.get("lookup") or it["name"], words, kind)
+        if m is not None:
+            m["_kind"] = kind  # photo selection checks what a good picture of this kind looks like
         if m is None:
             missing.append(it["name"])
         resolved.append((it, m))
@@ -244,4 +290,8 @@ def make_poster(text: str, out_path: Path, cache_dir: Path) -> Dict[str, Any]:
             uniq.append(c)
     return {**res, "title": parsed["title"], "items": [
         {"rank": it["rank"], "name": it["name"], "country": it["country"], "year": it["year"], "article": m["title"],
-         "photo": m.get("image_file_used") or m.get("image_file")} for it, m in resolved], "credits": uniq}
+         "photo": m.get("image_file_used") or m.get("image_file"),
+         "bullets": _bullets(it["specs"]),
+         "gun": _tidy(it["specs"].get("main armament") or it["specs"].get("armament") or ""),
+         "troops": _tidy(it["specs"].get("infantry capacity") or it["specs"].get("crew") or "")}
+        for it, m in resolved], "credits": uniq}
