@@ -1932,6 +1932,42 @@ async function approveActiveProjectLive(overrideQa = false) {
   }
 }
 
+// ---- Verified photo library: cutouts reused by every chart (reject a bad one, restore it) -----
+async function openPhotoLibrary() {
+  let modal = document.getElementById('photoLibraryModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'photoLibraryModal';
+    modal.className = 'fb-modal-backdrop';
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  }
+  const data = await fetch(`/api/photo-library?t=${Date.now()}`).then(r => r.json()).catch(() => ({ items: [] }));
+  const cards = (data.items || []).filter(i => i.exists).map(i => `
+    <div class="pl-card ${i.status === 'rejected' ? 'pl-rejected' : ''}">
+      <img src="${i.image_url}?t=${Date.now()}" alt="${escapeHtml(i.title)}">
+      <div class="pl-title">${escapeHtml(i.title)}</div>
+      <div class="pl-meta">${escapeHtml(i.kind || '')} · ${i.status === 'approved' ? '✓ in use' : '✕ rejected'}</div>
+      ${i.status === 'approved'
+        ? `<button class="btn btn-secondary btn-xs" onclick="photoLibraryAction('${i.key}','reject')">Reject</button>`
+        : `<button class="btn btn-secondary btn-xs" onclick="photoLibraryAction('${i.key}','restore')">Restore</button>`}
+    </div>`).join('') || '<div style="color:#94a3b8;">No photos yet. Every clean cutout a chart uses is saved here automatically.</div>';
+  modal.innerHTML = `
+    <div class="fb-modal" style="width:min(980px,100%);" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <strong style="font-size:15px;">📚 Verified Photo Library · ${data.approved || 0} in use</strong>
+        <button class="fb-del" onclick="document.getElementById('photoLibraryModal').remove()">✕</button>
+      </div>
+      <div style="font-size:12px; color:#94a3b8; margin-bottom:10px;">Clean cutouts of exact models. Charts use these first (instant, no download). Reject a bad one and the next chart finds another photo.</div>
+      <div class="pl-grid">${cards}</div>
+    </div>`;
+}
+
+async function photoLibraryAction(key, action) {
+  await fetch(`/api/photo-library/${key}/${action}`, { method: 'POST' });
+  openPhotoLibrary();
+}
+
 // ---- Per-video feedback: notes in plain words that Auto-fix turns into fixes -----------------
 function _fbStatusBadge(f) {
   const map = {

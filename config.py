@@ -18,6 +18,8 @@ ASSETS_DIR = BASE_DIR / "assets"
 AUDIO_ASSETS_DIR = Path(os.getenv("AI_SHORTS_AUDIO_DIR") or ASSETS_DIR / "audio")
 FONTS_DIR = BASE_DIR / "assets" / "fonts"
 CREDENTIALS_DIR = Path(os.getenv("AI_SHORTS_CREDENTIALS_DIR") or BASE_DIR / "credentials")
+# Verified photo library (clean cutouts of exact models, reused by every chart)
+PHOTO_LIBRARY_DIR = Path(os.getenv("AI_SHORTS_PHOTO_LIBRARY_DIR") or ASSETS_DIR / "photo_library")
 
 for d in [OUTPUT_DIR, PROJECTS_DIR, ASSETS_DIR, AUDIO_ASSETS_DIR, FONTS_DIR, CREDENTIALS_DIR]:
     d.mkdir(parents=True, exist_ok=True)

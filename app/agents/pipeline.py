@@ -1369,6 +1369,13 @@ class ShortsPipeline:
         low = [n.lower() for n in (exclude_names or [])]
         excl = [it.get("article") or it.get("name") for it in items
                 if any(x in str(it.get("article", "")).lower() or x in str(it.get("name", "")).lower() for x in low)]
+        # the user rejected these rows: their library photos are never reused either
+        try:
+            from agents import photo_library
+            for t in excl:
+                photo_library.reject(t)
+        except Exception as e:
+            print(f"[PhotoLibrary] reject failed: {e}")
         excl = list(dict.fromkeys(excl + list(project.get("chart_excluded") or [])))
         keep = [it.get("article") or it.get("name") for it in items if (it.get("article") or it.get("name")) not in excl]
         hero = Path(project["project_dir"]) / "scenes" / "hero_master.png"

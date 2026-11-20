@@ -2066,3 +2066,11 @@ video.scene-thumb-preview {
 .fb-item { padding: 8px 10px; border: 1px solid #1f2937; border-radius: 8px; margin-bottom: 6px; background: #0b1220; }
 .fb-del { background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 13px; }
 .fb-del:hover { color: #f87171; }
+
+/* Verified photo library */
+.pl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; max-height: 70vh; overflow: auto; }
+.pl-card { background: #ffffff; border-radius: 8px; padding: 8px; color: #111827; display: flex; flex-direction: column; gap: 4px; }
+.pl-card img { width: 100%; height: 90px; object-fit: contain; }
+.pl-title { font-size: 12px; font-weight: 700; }
+.pl-meta { font-size: 11px; color: #4b5563; }
+.pl-rejected { opacity: 0.45; }

@@ -17,6 +17,7 @@ _TMP = Path(tempfile.mkdtemp(prefix="ai_shorts_tests_"))
 os.environ["AI_SHORTS_OUTPUT_DIR"] = str(_TMP / "output")
 os.environ["AI_SHORTS_AUDIO_DIR"] = str(_TMP / "audio")
 os.environ["AI_SHORTS_CREDENTIALS_DIR"] = str(_TMP / "credentials")
+os.environ["AI_SHORTS_PHOTO_LIBRARY_DIR"] = str(_TMP / "photo_library")
 os.environ.setdefault("SCRIPT_WRITER", "template")   # never call the local LLM from tests
 os.environ.setdefault("THEME_MUSIC", "on")
 for sub in ("output", "audio", "credentials"):

@@ -81,6 +81,11 @@ def run_backup() -> Dict[str, Any]:
         res = subprocess.run([rsync, "-a", "--delete-after", "--exclude", "temp_render_*", f"{src}/", f"{mirror}/"],
                              capture_output=True, text=True, timeout=3600)
         mirrored = res.returncode == 0
+    # 3) the verified photo library (grows as charts are built; slow to rebuild)
+    lib_src = Path(config.PHOTO_LIBRARY_DIR)
+    if lib_src.exists() and rsync:
+        (root / "photo_library_mirror").mkdir(exist_ok=True)
+        subprocess.run([rsync, "-a", f"{lib_src}/", f"{root / 'photo_library_mirror'}/"], capture_output=True, timeout=1800)
     report = {"archive": str(archive), "archive_mb": round(archive.stat().st_size / 1e6, 1),
               "kept_archives": min(len(archives), KEEP_DAYS), "projects_mirrored": mirrored,
               "seconds": round(time.time() - t0, 1)}

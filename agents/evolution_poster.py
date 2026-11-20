@@ -279,35 +279,52 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
     """(image, is_cutout). Lead photo first; if it can't be cut out cleanly, other photos from the
     same article; the framed lead photo is the last resort. Cached per article."""
     cache_dir.mkdir(parents=True, exist_ok=True)
+    from agents import photo_library
+    # 1) the verified photo library: a cutout that already passed every check (no download, works offline)
+    lib = photo_library.get(model["title"])
+    if lib is not None:
+        model["image_file_used"] = (photo_library.entry(model["title"]) or {}).get("source_file") or model.get("image_file")
+        return lib, True
+    rejected = {f.replace(" ", "_") for f in photo_library.rejected_sources(model["title"])}
     key = re.sub(r"[^A-Za-z0-9]+", "_", model["title"])[:60]
     cut_p, raw_p = cache_dir / f"{key}_cut.png", cache_dir / f"{key}.jpg"
+    lead_rejected = bool(model.get("image_file")) and model["image_file"].replace(" ", "_") in rejected
+    if lead_rejected:  # the user rejected this photo: never show it again, go to the article's other photos
+        cut_p.unlink(missing_ok=True)
     if cut_p.exists():
         cached = Image.open(cut_p).convert("RGBA")
         # Cutouts cached under older, weaker checks are re-checked for strict kinds
         if model.get("_kind", "vehicle") == "vehicle" or _exterior_ok(cached, model.get("_kind")):
+            _to_library(model, cached)
             return cached, True
         cut_p.unlink(missing_ok=True)
-    if not raw_p.exists():
+    if not raw_p.exists() and not lead_rejected:
         _download(model["image_url"], raw_p)
         time.sleep(1)
-    if not raw_p.exists():
+    if not raw_p.exists() and not lead_rejected:
         return None, False
     kind = model.get("_kind", "vehicle")
     strict = kind != "vehicle"  # vehicles keep the original behaviour; other kinds re-check every candidate
-    src = Image.open(raw_p)
-    alpha_p = _alpha_path(raw_p)
-    ready = _ready_cutout(Image.open(alpha_p)) if alpha_p.exists() else None
-    if ready is not None and (not strict or _exterior_ok(ready, kind)):
-        ready.save(cut_p)
-        return ready, True
-    raw = _rgb_on_white(src)
-    cut = _cutout(raw)
-    if cut is not None and strict and not _exterior_ok(cut, kind):
-        cut = None
+    if lead_rejected:
+        raw, cut = None, None
+    else:
+        src = Image.open(raw_p)
+        alpha_p = _alpha_path(raw_p)
+        ready = _ready_cutout(Image.open(alpha_p)) if alpha_p.exists() else None
+        if ready is not None and (not strict or _exterior_ok(ready, kind)):
+            ready.save(cut_p)
+            _to_library(model, ready)
+            return ready, True
+        raw = _rgb_on_white(src)
+        cut = _cutout(raw)
+        if cut is not None and strict and not _exterior_ok(cut, kind):
+            cut = None
     if cut is None:
         lead_file = (model.get("image_file") or "").replace(" ", "_")
         for i, alt in enumerate(_commons_photos(model)):
             if lead_file and lead_file in alt["file"].replace(" ", "_"):
+                continue
+            if alt["file"].replace(" ", "_") in rejected:
                 continue
             alt_p = cache_dir / f"{key}_alt{i}.jpg"
             if alt_p.exists() or _download(alt["url"], alt_p):
@@ -320,8 +337,20 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
             time.sleep(1)
     if cut is not None:
         cut.save(cut_p)
+        _to_library(model, cut)
         return cut, True
     return raw, False
+
+
+def _to_library(model: Dict[str, Any], cut: Image.Image) -> None:
+    """A cutout that passed every check joins the verified photo library (reused by later charts)."""
+    try:
+        from agents import photo_library
+        src = model.get("image_file_used") or model.get("image_file") or ""
+        photo_library.add(model["title"], model.get("_kind", "vehicle"), cut, source_file=src,
+                          source_url=model.get("url") or "")
+    except Exception as e:
+        print(f"[PhotoLibrary] not saved for {model.get('title')}: {e}")
 
 
 # ------------------------------------------------------------------ render

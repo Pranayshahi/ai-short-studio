@@ -23,3 +23,6 @@ openmontage/
 
 # Pre-made theme music pool (generated nightly)
 assets/audio/theme_pool/
+
+# Verified photo library (grows as charts are built; backed up nightly)
+assets/photo_library/
