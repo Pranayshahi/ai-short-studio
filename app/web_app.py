@@ -2145,7 +2145,7 @@ class CarQueueRefillRequest(BaseModel):
 # Route groups split into app/routes/ (imported last: they use the models/helpers defined above)
 # ------------------------------------------------------------------------------------------------
 from app.routes import agents as _routes_agents, car_queue as _routes_car_queue, music as _routes_music, \
-    settings as _routes_settings, photo_library as _routes_photo_library  # noqa: E402
+    settings as _routes_settings, photo_library as _routes_photo_library, analytics as _routes_analytics  # noqa: E402
 
-for _r in (_routes_music, _routes_car_queue, _routes_agents, _routes_settings, _routes_photo_library):
+for _r in (_routes_music, _routes_car_queue, _routes_agents, _routes_settings, _routes_photo_library, _routes_analytics):
     app.include_router(_r.router)

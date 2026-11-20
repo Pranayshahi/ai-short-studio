@@ -1932,6 +1932,41 @@ async function approveActiveProjectLive(overrideQa = false) {
   }
 }
 
+// ---- Performance: YouTube stats per video, and what works by style / music theme / channel -----
+async function openAnalytics(refresh = false) {
+  let modal = document.getElementById('analyticsModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'analyticsModal';
+    modal.className = 'fb-modal-backdrop';
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `<div class="fb-modal"><div style="color:#94a3b8;">${refresh ? 'Reading YouTube…' : 'Loading…'}</div></div>`;
+  const d = await fetch(refresh ? '/api/analytics/refresh' : `/api/analytics?t=${Date.now()}`, { method: refresh ? 'POST' : 'GET' })
+    .then(r => r.json()).catch(() => ({}));
+  const n = x => (x || 0).toLocaleString();
+  const table = (rows, label) => `
+    <table class="an-table"><tr><th>${label}</th><th>Videos</th><th>Public</th><th>Views</th><th>Avg views (public)</th></tr>
+      ${(rows || []).map(r => `<tr><td>${escapeHtml(String(r.name))}</td><td>${r.videos}</td><td>${r.public_videos}</td><td>${n(r.views)}</td><td><strong>${n(r.avg_views)}</strong></td></tr>`).join('')}
+    </table>`;
+  const t = d.totals || {};
+  const vids = (d.videos || []).map(v => `<tr><td><a href="${v.url}" target="_blank">${escapeHtml(v.title || v.topic || '')}</a></td>
+      <td>${escapeHtml(v.channel)}</td><td>${escapeHtml(v.privacy)}</td><td>${n(v.views)}</td><td>+${n(v.views_7d)}</td><td>${n(v.likes)}</td><td>${n(v.comments)}</td></tr>`).join('');
+  modal.innerHTML = `
+    <div class="fb-modal" style="width:min(1000px,100%);" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <strong style="font-size:15px;">📈 Performance · ${n(t.views)} views · ${t.public || 0}/${t.videos || 0} public · +${n(t.views_7d)} this week</strong>
+        <span><button class="btn btn-secondary btn-xs" onclick="openAnalytics(true)">🔄 Refresh from YouTube</button>
+        <button class="fb-del" onclick="document.getElementById('analyticsModal').remove()">✕</button></span>
+      </div>
+      <div style="font-size:12px; color:#94a3b8; margin-bottom:8px;">Last read: ${escapeHtml(d.last_refresh || 'never')} · refreshed daily at 07:15${d.note ? ' · ' + escapeHtml(d.note) : ''}${(d.errors || []).length ? ' · ⚠️ ' + escapeHtml(d.errors.join('; ')) : ''}</div>
+      <div class="an-grid">${table(d.by_style, 'Style')}${table(d.by_music_theme, 'Music theme')}${table(d.by_channel, 'Channel')}${table(d.by_category, 'Category')}</div>
+      <h4 style="margin:12px 0 6px;">Videos</h4>
+      <div style="max-height:40vh; overflow:auto;"><table class="an-table"><tr><th>Video</th><th>Channel</th><th>Privacy</th><th>Views</th><th>7 days</th><th>Likes</th><th>Comments</th></tr>${vids}</table></div>
+    </div>`;
+}
+
 // ---- Verified photo library: cutouts reused by every chart (reject a bad one, restore it) -----
 async function openPhotoLibrary() {
   let modal = document.getElementById('photoLibraryModal');

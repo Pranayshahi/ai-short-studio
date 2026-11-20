@@ -406,6 +406,9 @@ def main():
     scheduler.add_job(health.daily_summary, "cron", hour=s_hour, minute=s_min, id="summary", coalesce=True)
     from app.utils.storage import StorageManager
     scheduler.add_job(StorageManager.purge_trash, "cron", hour=3, minute=45, id="purge_trash", coalesce=True)
+    from app.automation import analytics
+    scheduler.add_job(analytics.refresh, "cron", hour=7, minute=15, id="youtube_analytics", coalesce=True,
+                      max_instances=1, misfire_grace_time=6 * 3600)
     from app.automation import backup
     scheduler.add_job(backup.run_backup, "cron", hour=3, minute=30, id="nightly_backup", coalesce=True,
                       max_instances=1, misfire_grace_time=6 * 3600)
