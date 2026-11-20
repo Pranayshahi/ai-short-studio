@@ -1607,117 +1607,22 @@ def approve_and_publish_live(project_id: str, req: ApprovePublishRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/api/settings")
-def get_studio_settings():
-    import json as _json
-    settings_file = config.STUDIO_SETTINGS_FILE
-    saved = {}
-    if settings_file.exists():
-        try:
-            saved = _json.loads(settings_file.read_text(encoding="utf-8"))
-        except Exception:
-            saved = {}
-    has_key = bool(saved.get("gemini_api_key") or config.GEMINI_API_KEY)
-    return JSONResponse(
-        content={
-            "gemini_configured": has_key,
-            "gemini_reference_url": saved.get("gemini_reference_url", config.GEMINI_REFERENCE_URL),
-            "has_weaponx_reference_image": config.WEAPONX_REFERENCE_IMAGE.exists(),
-            "youtube_channel_id": saved.get("youtube_channel_id", config.YOUTUBE_TARGET_CHANNEL_ID),
-            "youtube_studio_url": f"https://studio.youtube.com/channel/{saved.get('youtube_channel_id', config.YOUTUBE_TARGET_CHANNEL_ID)}",
-            "youtube_oauth_configured": YouTubePublisher.is_configured(),
-            "youtube_authenticated": YouTubePublisher.is_authenticated(),  # default channel
-            "youtube_channels": __import__("agents.youtube_channels", fromlist=["x"]).public_summary()["channels"],
-            "hf_token_configured": bool(clip_generator.get_hf_token()),
-        },
-        headers=NO_CACHE_HEADERS,
-    )
 
 
-@app.post("/api/settings")
-def update_studio_settings(req: StudioSettingsRequest):
-    import json as _json
-    settings_file = config.STUDIO_SETTINGS_FILE
-    saved = {}
-    if settings_file.exists():
-        try:
-            saved = _json.loads(settings_file.read_text(encoding="utf-8"))
-        except Exception:
-            saved = {}
-    if req.gemini_api_key is not None and req.gemini_api_key.strip():
-        saved["gemini_api_key"] = req.gemini_api_key.strip()
-        os.environ["GEMINI_API_KEY"] = req.gemini_api_key.strip()
-    if req.hf_token is not None and req.hf_token.strip():
-        saved["hf_token"] = req.hf_token.strip()
-    if req.gemini_reference_url:
-        saved["gemini_reference_url"] = req.gemini_reference_url.strip()
-    if req.youtube_channel_id:
-        saved["youtube_channel_id"] = req.youtube_channel_id.strip()
-    settings_file.write_text(_json.dumps(saved, indent=2), encoding="utf-8")
-    return {"status": "success", "gemini_configured": bool(saved.get("gemini_api_key") or config.GEMINI_API_KEY)}
 
 
-@app.post("/api/settings/weaponx-reference")
-async def upload_weaponx_reference_image(file: UploadFile = File(...)):
-    """Uploads a reference image from the user's Gemini session (https://gemini.google.com/u/1/app/dbdf5025a758bf01)."""
-    content = await file.read()
-    if not content or len(content) < 1000:
-        raise HTTPException(status_code=400, detail="Invalid image file")
-    try:
-        raw_img = Image.open(io.BytesIO(content)).convert("RGB")
-        raw_img.save(config.WEAPONX_REFERENCE_IMAGE, "PNG")
-        return {"status": "success", "path": str(config.WEAPONX_REFERENCE_IMAGE)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save reference image: {e}")
 
 
-@app.post("/api/settings/youtube-secrets")
-async def upload_youtube_client_secrets(file: UploadFile = File(...)):
-    """Uploads Google Cloud OAuth client_secrets.json into credentials/client_secrets.json."""
-    import json as _json
-    content = await file.read()
-    try:
-        parsed = _json.loads(content.decode("utf-8"))
-        if "installed" not in parsed and "web" not in parsed:
-            raise ValueError("JSON must be a Google OAuth 2.0 Client ID file ('installed' or 'web' key).")
-        config.YOUTUBE_CLIENT_SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        config.YOUTUBE_CLIENT_SECRETS_FILE.write_text(_json.dumps(parsed, indent=2), encoding="utf-8")
-        return {"status": "success", "path": str(config.YOUTUBE_CLIENT_SECRETS_FILE)}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid client_secrets.json: {e}")
 
 
-@app.get("/api/channels")
-def list_channels():
-    """Registered YouTube channels (no tokens): [{key, id, handle, title, authorized, is_default, studio_url}]."""
-    from agents import youtube_channels as reg
-    return JSONResponse(content=reg.public_summary(), headers=NO_CACHE_HEADERS)
 
 
 class ChannelDefaultRequest(BaseModel):
     channel: str
 
 
-@app.post("/api/channels/default")
-def set_default_channel(req: ChannelDefaultRequest):
-    from agents import youtube_channels as reg
-    try:
-        reg.set_default(req.channel)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown channel '{req.channel}'")
-    return JSONResponse(content=reg.public_summary(), headers=NO_CACHE_HEADERS)
 
 
-@app.post("/api/settings/youtube-auth")
-def trigger_youtube_oauth(channel: Optional[str] = None):
-    """Opens the Google sign-in for one channel (query ?channel=autoflashx; default = registry default)
-    and saves that channel's own token file."""
-    try:
-        YouTubePublisher.get_authenticated_service(channel=channel)
-        from agents import youtube_channels as reg
-        return {"status": "success", "youtube_oauth_configured": True, "channel": reg.get(channel)["key"]}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/projects/{project_id}/regenerate-weaponx-image")
@@ -1987,136 +1892,16 @@ class ContentAnalyserRequest(BaseModel):
     target_duration: Optional[float] = 25.0
     language: Optional[str] = "en"
 
-@app.get("/api/agents")
-def list_agents():
-    """Returns metadata on all autonomous studio agents."""
-    return {
-        "agents": [
-            {
-                "id": "topic-agent",
-                "class": "TopicAgent",
-                "module": "agents.topic_agent",
-                "description": "Takes topics and performs deep research from Wikipedia, DuckDuckGo, and verified knowledge bases.",
-            },
-            {
-                "id": "content-analyser",
-                "class": "ContentAnalyserAgent",
-                "module": "agents.content_analyser",
-                "description": "Checks, fact-verifies, and corrects text coming from topic-agent, calibrating hooks and scene pacing.",
-            },
-            {
-                "id": "image-generator",
-                "class": "ImageGeneratorAgent",
-                "module": "agents.image_generator",
-                "description": "Deep searches images, checks source provenance/licenses, verifies images match the topic, and triggers CHANGE_IMAGE replacements if required.",
-            },
-            {
-                "id": "music-agent",
-                "class": "MusicAgent",
-                "module": "agents.music_agent",
-                "description": "Performs deep prompt research, multi-stem algorithmic composition (drums, bass, guitar riffs, leads, choir formants), and prompt adherence verification.",
-            },
-            {
-                "id": "hindi-voice-agent",
-                "class": "HindiVoiceAgent",
-                "module": "agents.hindi_voice_agent",
-                "description": "Translates and localizes scripts into authentic Hindi (शुद्ध हिंदी) with neural voices and synchronized Devanagari subtitles.",
-            },
-            {
-                "id": "Verify-video",
-                "class": "VerifyVideoAgent",
-                "module": "agents.verify_video",
-                "description": "End-to-end verifier that checks topic research, content corrections, image sources & topic match, audio/subtitles, and decoded video frames.",
-            },
-            {
-                "id": "qa-tester-agent",
-                "class": "QATesterAgent",
-                "module": "agents.qa_tester_agent",
-                "description": "Autonomous full-stack QA engineer that audits DOM contracts, AST syntax, PIL image engines, and agent pipelines.",
-            },
-        ]
-    }
 
-@app.post("/api/agents/topic-agent")
-def run_topic_agent_endpoint(req: TopicAgentRequest):
-    from agents.topic_agent import TopicAgent
-    agent = TopicAgent(language=req.language)
-    res = agent.run(
-        topic=req.topic,
-        language=req.language,
-        target_duration=req.target_duration,
-        custom_notes=req.custom_notes,
-    )
-    return JSONResponse(content=res, headers=NO_CACHE_HEADERS)
 
-@app.post("/api/agents/content-analyser")
-def run_content_analyser_endpoint(req: ContentAnalyserRequest):
-    from agents.content_analyser import ContentAnalyserAgent
-    agent = ContentAnalyserAgent()
-    res = agent.run(
-        topic_research=req.topic_research,
-        style=req.style,
-        target_duration=req.target_duration,
-        language=req.language,
-    )
-    return JSONResponse(content=res, headers=NO_CACHE_HEADERS)
 
-@app.post("/api/agents/image-generator/{project_id}")
-def run_image_generator_endpoint(project_id: str):
-    """Runs 'image-generator' on an existing project to re-verify sources and replace any mismatched images."""
-    project = StorageManager.get_project_by_id(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
 
-    from agents.image_generator import ImageGeneratorAgent
-    p_dir = Path(project.get("project_dir", ""))
-    topic_res = project.get("topic_research") or {"topic": project.get("topic", "")}
-    content_res = project.get("content_analysis") or {
-        "topic": project.get("topic", ""),
-        "scenes": project.get("scenes", []),
-    }
-    agent = ImageGeneratorAgent()
-    img_report = agent.run(
-        topic_research=topic_res,
-        content_analysis=content_res,
-        output_dir=p_dir,
-        style=project.get("style", "default"),
-    )
-    project["image_report"] = img_report
-    project["visual_records"] = img_report["visual_records"]
-    project["image_paths"] = img_report["image_paths"]
-    StorageManager.save_project(project)
-    return JSONResponse(content=img_report, headers=NO_CACHE_HEADERS)
-
-@app.get("/api/agents/verify-video/{project_id}")
-def run_verify_video_endpoint(project_id: str):
-    """Runs 'Verify-video' across all stages of a project."""
-    project = StorageManager.get_project_by_id(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    from agents.verify_video import VerifyVideoAgent
-    agent = VerifyVideoAgent()
-    report = agent.run(project_record=project)
-    project["qa_report"] = report
-    project["verify_video_report"] = report
-    StorageManager.save_project(project)
-    return JSONResponse(content=report, headers=NO_CACHE_HEADERS)
 
 
 # ==========================================
 # AI Music & Saved Music Library
 # ==========================================
 
-@app.get("/api/music/tracks")
-def get_music_tracks():
-    """Lists available AI-generated and saved library music tracks."""
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-    return JSONResponse(content={
-        "tracks": mg.list_tracks(),
-        "styles": AIMusicGenerator.STYLES
-    }, headers=NO_CACHE_HEADERS)
 
 
 SYNTH_FALLBACK_WARNING = "ACE-Step music server is not running, so this is a synthesized ambience (tones + noise), not AI music. Start it with scripts/start_acestep.sh."
@@ -2132,445 +1917,22 @@ def _mark_synth_fallback(track):
             track["name"] = f"Synth ambience · {name}"
     return track
 
-@app.post("/api/music/generate-ai")
-def generate_ai_music_endpoint(req: AIMusicGenerateRequest):
-    """Procedurally synthesizes an AI music track with multi-stem audio layering."""
-    from agents.music_generator import AIMusicGenerator
-    dur = req.duration if req.duration is not None else 30.0
-    # Real AI music via the local ACE-Step model when it's running
-    from agents.acestep_music_agent import ACEStepMusicAgent
-    acestep = ACEStepMusicAgent()
-    if acestep.is_available():
-        try:
-            style_key = (req.style or "epic_cinematic").lower()
-            category = "Electronic" if "cyber" in style_key else ("Rock" if "strike" in style_key else "Cinematic")
-            mood = "Tense" if ("stealth" in style_key or "cyber" in style_key) else "Epic"
-            track = acestep.generate_track(category=category, mood=mood, vocals="Instrumental",
-                                           duration=max(10.0, dur), prompt=req.prompt)
-            return JSONResponse(content={
-                "status": "success",
-                "engine": "ace-step",
-                "filename": track.get("filename"),
-                "url": track.get("url"),
-                "style": req.style,
-                "duration": dur,
-                "file_path": track.get("file_path"),
-                "track": track,
-            }, headers=NO_CACHE_HEADERS)
-        except Exception as e:
-            logger.warning(f"ACE-Step generation failed in generate-ai, falling back to synth: {e}")
-    mg = AIMusicGenerator()
-    try:
-        out_path = mg.generate_ai_music(style=req.style or "epic_cinematic", duration=dur, prompt=req.prompt)
-        return JSONResponse(content={
-            "status": "success",
-            "engine": "procedural_synth",
-            "warning": SYNTH_FALLBACK_WARNING,
-            "filename": out_path.name,
-            "url": f"/api/music/preview/{out_path.name}?type=ai",
-            "style": req.style,
-            "duration": dur,
-            "file_path": str(out_path)
-        }, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI music generation failed: {e}")
 
-@app.get("/api/music/meta")
-def get_music_meta():
-    """Returns categories, moods, vocal types, durations, and default prompts."""
-    from agents.music_generator import AIMusicGenerator
-    return JSONResponse(content={
-        "categories": list(AIMusicGenerator.CATEGORIES.keys()),
-        "categories_info": {k: {"desc": v["desc"], "bpm": v["tempo_bpm"]} for k, v in AIMusicGenerator.CATEGORIES.items()},
-        "moods": list(AIMusicGenerator.MOODS.keys()),
-        "vocals": list(AIMusicGenerator.VOCALS.keys()),
-        "durations": [
-            {"label": "30 sec", "seconds": 30.0},
-            {"label": "60 sec", "seconds": 60.0},
-            {"label": "2 min", "seconds": 120.0},
-            {"label": "3 min", "seconds": 180.0}
-        ],
-        "default_prompts": AIMusicGenerator.DEFAULT_PROMPTS
-    }, headers=NO_CACHE_HEADERS)
 
-@app.post("/api/music/agent/research")
-def research_music_prompt_endpoint(req: CustomMusicGenerateRequest):
-    """Deeply researches user music prompt, extracts BPM, scale, root key, and composition specs."""
-    from agents.music_agent import MusicAgent
-    agent = MusicAgent()
-    try:
-        specs = agent.deep_research_prompt(
-            prompt=req.prompt,
-            category=req.category or "Metal",
-            mood=req.mood or "Aggressive",
-            vocals=req.vocals or "Instrumental",
-            duration=req.duration or 60.0
-        )
-        return JSONResponse(content={"status": "success", "research_specs": specs}, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Music research failed: {e}")
 
-@app.post("/api/music/agent/generate")
-@app.post("/api/agents/music-agent")
-def generate_music_agent_endpoint(req: CustomMusicGenerateRequest):
-    """Autonomous MusicAgent: Researches prompt deeply, composes multi-stem audio, and validates adherence.
-    Prefers ACE-Step 1.5 neural generator when available."""
-    from agents.acestep_music_agent import ACEStepMusicAgent
-    acestep = ACEStepMusicAgent()
-    if acestep.is_available():
-        try:
-            track = acestep.generate_track(
-                category=req.category or "Cinematic",
-                mood=req.mood or "Epic",
-                vocals=req.vocals or "Instrumental",
-                duration=req.duration or 60.0,
-                prompt=req.prompt,
-                name=req.name,
-                lyrics=req.lyrics,
-            )
-            return JSONResponse(content={"status": "success", "track": track}, headers=NO_CACHE_HEADERS)
-        except Exception as e:
-            logger.warning(f"ACE-Step generation in MusicAgent failed, using procedural fallback: {e}")
 
-    from agents.music_agent import MusicAgent
-    agent = MusicAgent()
-    try:
-        res = agent.generate_track(
-            category=req.category or "Metal",
-            mood=req.mood or "Aggressive",
-            vocals=req.vocals or "Instrumental",
-            duration=req.duration or 60.0,
-            prompt=req.prompt,
-            name=req.name,
-            save_to_library=bool(req.save_to_library),
-            is_default=bool(req.is_default)
-        )
-        return JSONResponse(content={"status": "success", "track": _mark_synth_fallback(res),
-                                     "warning": SYNTH_FALLBACK_WARNING}, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"MusicAgent generation failed: {e}")
 
-@app.post("/api/music/agent/deep-verify")
-def deep_verify_music_endpoint(req: DeepVerifyMusicRequest):
-    """
-    Performs deep acoustic and theory verification of the generated music track
-    against the requested Category, Mood, Vocals, Duration, and Prompt.
-    """
-    from agents.music_agent import MusicAgent
-    agent = MusicAgent()
-    audio_p = None
-    if req.file_path and Path(req.file_path).exists():
-        audio_p = Path(req.file_path)
-    elif req.filename:
-        cand = list(agent.ai_music_dir.glob(f"*{req.filename}*")) + list(agent.library_dir.glob(f"*{req.filename}*")) + list(agent.yt_music_dir.glob(f"*{req.filename}*"))
-        if cand:
-            audio_p = cand[0]
 
-    if not audio_p or not audio_p.exists():
-        raise HTTPException(status_code=404, detail=f"Audio track not found: {req.filename or req.file_path}")
 
-    try:
-        report = agent.deep_verify_audio(
-            audio_path=audio_p,
-            category=req.category or "Metal",
-            mood=req.mood or "Aggressive",
-            vocals=req.vocals or "Instrumental",
-            duration=req.duration or 60.0,
-            prompt=req.prompt
-        )
-        return JSONResponse(content={"status": "success", "verification": report}, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Deep verification failed: {e}")
 
-@app.post("/api/music/generate-custom")
-def generate_custom_music_endpoint(req: CustomMusicGenerateRequest):
-    """Generates original AI music matching Category, Mood, Vocals, Duration, and Prompt.
-    Automatically prioritizes the ACE-Step 1.5 neural engine if active."""
-    from agents.acestep_music_agent import ACEStepMusicAgent
-    acestep = ACEStepMusicAgent()
-    if acestep.is_available():
-        try:
-            track = acestep.generate_track(
-                category=req.category or "Cinematic",
-                mood=req.mood or "Epic",
-                vocals=req.vocals or "Instrumental",
-                duration=req.duration or 60.0,
-                prompt=req.prompt,
-                name=req.name,
-                lyrics=req.lyrics,
-            )
-            return JSONResponse(content={"status": "success", "track": track}, headers=NO_CACHE_HEADERS)
-        except Exception as e:
-            logger.warning(f"ACE-Step generation failed in custom endpoint, falling back to procedural: {e}")
 
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-    try:
-        res = mg.generate_custom_music(
-            category=req.category or "Metal",
-            mood=req.mood or "Aggressive",
-            vocals=req.vocals or "Instrumental",
-            duration=req.duration or 60.0,
-            prompt=req.prompt,
-            name=req.name,
-            save_to_library=bool(req.save_to_library),
-            is_default=bool(req.is_default)
-        )
-        return JSONResponse(content={"status": "success", "track": _mark_synth_fallback(res),
-                                     "warning": SYNTH_FALLBACK_WARNING}, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Custom music generation failed: {e}")
 
-@app.get("/api/music/acestep/status")
-def acestep_status():
-    """Reports whether the local ACE-Step 1.5 API server is reachable."""
-    from agents.acestep_music_agent import ACEStepMusicAgent
-    a = ACEStepMusicAgent()
-    return JSONResponse(content={"available": a.is_available(), "url": a.base_url}, headers=NO_CACHE_HEADERS)
 
-@app.post("/api/music/acestep/generate")
-def acestep_generate(req: CustomMusicGenerateRequest):
-    """Generates music with the local ACE-Step 1.5 server (free)."""
-    from agents.acestep_music_agent import ACEStepMusicAgent
-    agent = ACEStepMusicAgent()
-    if agent.health_error():
-        raise HTTPException(status_code=503, detail=f"ACE-Step unavailable: {agent.health_error()}")
-    try:
-        track = agent.generate_track(
-            category=req.category or "Cinematic", mood=req.mood or "Epic",
-            vocals=req.vocals or "Instrumental", duration=req.duration or 60.0,
-            prompt=req.prompt, name=req.name, lyrics=req.lyrics,
-        )
-        return JSONResponse(content={"status": "success", "track": track}, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ACE-Step generation failed: {e}")
 
-@app.get("/api/music/library")
-def get_saved_music_library():
-    """Returns list of user's saved library music tracks."""
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-    return JSONResponse(content={"library": mg.list_saved_library()}, headers=NO_CACHE_HEADERS)
 
-@app.get("/api/music/recent-generated")
-def get_recent_generated_music():
-    """Returns recently synthesized AI music tracks from assets/audio/ai_generated."""
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-    return JSONResponse(content={"recent": mg.list_recent_ai_tracks(limit=12)}, headers=NO_CACHE_HEADERS)
 
-@app.post("/api/music/library/save")
-def save_music_to_library_endpoint(req: SaveMusicToLibraryRequest):
-    """Saves any generated track to persistent library so it can be reused in future video creation."""
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-    source = req.filename or req.track_id
-    if not source:
-        raise HTTPException(status_code=400, detail="filename or track_id is required")
-    try:
-        record = mg.save_to_library(
-            source_path_or_id=source,
-            name=req.name,
-            category=req.category or "Custom",
-            mood=req.mood or "Epic",
-            vocals=req.vocals or "Instrumental",
-            duration=req.duration or 60.0,
-            prompt=req.prompt or "",
-            is_default=bool(req.is_default)
-        )
-        return JSONResponse(content={"status": "success", "message": "Saved to library successfully!", "track": record}, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save to library: {e}")
 
-@app.delete("/api/music/library/{track_id}")
-def delete_music_from_library_endpoint(track_id: str):
-    """Deletes a saved music track from user's library."""
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-    deleted = mg.delete_from_library(track_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Track not found in library")
-    return JSONResponse(content={"status": "success", "message": "Deleted from library"}, headers=NO_CACHE_HEADERS)
 
-@app.post("/api/music/library/{track_id}/set-default")
-def set_default_music_endpoint(track_id: str):
-    """Sets a saved track as the default music for future video creations."""
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-    ok = mg.set_default_library_track(track_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Track not found in library")
-    return JSONResponse(content={"status": "success", "message": "Set as default music for next video creations"}, headers=NO_CACHE_HEADERS)
-
-@app.get("/api/music/preview/{filename}")
-def preview_music(filename: str, type: Optional[str] = None):
-    """Streams preview audio for web playback."""
-    candidates = [
-        config.AUDIO_ASSETS_DIR / "library" / filename,
-        config.AUDIO_ASSETS_DIR / "ai_generated" / filename,
-        config.AUDIO_ASSETS_DIR / "youtube" / filename,
-        config.AUDIO_ASSETS_DIR / filename
-    ]
-    for p in candidates:
-        if p.exists() and p.is_file():
-            media = "audio/wav" if p.suffix.lower() == ".wav" else "audio/mpeg"
-            return FileResponse(str(p), media_type=media, headers=NO_CACHE_HEADERS)
-    raise HTTPException(status_code=404, detail="Audio track not found")
-
-@app.post("/api/projects/{project_id}/apply-music")
-def apply_music_endpoint(project_id: str, req: ApplyMusicRequest):
-    """
-    Applies background music or advanced audio remix onto an existing short video.
-    Also handles cleanly removing music from video while restoring 100% clean voiceover.
-    """
-    project = StorageManager.get_project_by_id(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    video_path = project.get("video_path")
-    p_dir = Path(project.get("project_dir", ""))
-    if not video_path or not Path(video_path).exists():
-        video_path = p_dir / "final_short.mp4"
-        if not video_path.exists():
-            raise HTTPException(status_code=400, detail="Video file not found for project.")
-
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-
-    mv = float(req.music_volume) if req.music_volume is not None else (float(req.volume) if req.volume is not None else 0.22)
-    vv = float(req.voice_volume) if req.voice_volume is not None else 1.0
-    # Music-only projects: remix rebuilds audio from voiceover.mp3, which would bring the removed voice back
-    voice_off = project.get("with_voice") is False or project.get("audio_mode") in ("without_voice", "mute")
-    if voice_off:
-        vv = 0.0
-
-    # 1. Option to remove music completely
-    if req.remove_music:
-        try:
-            clean_path = mg.remove_video_music(
-                video_path=Path(video_path),
-                voice_volume=vv
-            )
-            project["video_path"] = str(clean_path)
-            project["with_music"] = False
-            project["audio_mode"] = "without_music"
-            project["music_track"] = None
-            project["music_path"] = None
-            project["music_remix"] = None
-            project["voice_volume"] = vv
-            StorageManager.save_project(project)
-            return JSONResponse(content={
-                "status": "success",
-                "message": "Background music removed from video! Voiceover is now 100% clean.",
-                "video_path": str(clean_path),
-                "project": project
-            }, headers=NO_CACHE_HEADERS)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to remove music: {e}")
-
-    # 2. Add or Remix Music onto video
-    track_id = req.track_id or req.music_track
-    if not track_id:
-        raise HTTPException(status_code=400, detail="track_id is required to add or remix music")
-
-    music_file = None
-    for t in mg.list_tracks():
-        if t["id"] == track_id or t["filename"] == track_id:
-            music_file = Path(t["file_path"])
-            break
-    if not music_file and Path(track_id).exists():
-        music_file = Path(track_id)
-
-    if not music_file or not music_file.exists():
-        raise HTTPException(status_code=404, detail=f"Music track '{track_id}' not found.")
-
-    try:
-        c_dur = float(req.clip_duration) if req.clip_duration is not None and float(req.clip_duration) > 0.05 else None
-        c_start = float(req.clip_start or 0.0)
-        c_loop = bool(req.clip_loop) if req.clip_loop is not None else True
-
-        remixed_path = mg.remix_video_music(
-            video_path=Path(video_path),
-            music_path=music_file,
-            music_volume=mv,
-            voice_volume=vv,
-            ducking=req.ducking if req.ducking is not None else True,
-            tempo_factor=req.tempo_factor or 1.0,
-            bass_boost=req.bass_boost or 0.0,
-            treble_boost=req.treble_boost or 0.0,
-            reverb=req.reverb or 0.0,
-            drums_volume=req.drums_volume or 1.0,
-            melody_volume=req.melody_volume or 1.0,
-            clip_start=c_start,
-            clip_duration=c_dur,
-            clip_loop=c_loop,
-        )
-        project["video_path"] = str(remixed_path)
-        project["music_track"] = track_id
-        # Re-render reads music_path: without it every re-render fell back to the default track
-        project["music_path"] = str(music_file)
-        # ...and re-applies the same mix (trim/loop/tempo/EQ), which the composer alone can't do
-        project["music_remix"] = {
-            "music_volume": mv, "voice_volume": vv,
-            "ducking": req.ducking if req.ducking is not None else True,
-            "tempo_factor": req.tempo_factor or 1.0, "bass_boost": req.bass_boost or 0.0,
-            "treble_boost": req.treble_boost or 0.0, "reverb": req.reverb or 0.0,
-            "drums_volume": req.drums_volume or 1.0, "melody_volume": req.melody_volume or 1.0,
-            "clip_start": c_start, "clip_duration": c_dur, "clip_loop": c_loop,
-        }
-        project["music_volume"] = mv
-        project["voice_volume"] = vv
-        project["with_music"] = True
-        project["audio_mode"] = "without_voice" if voice_off else "with_voice"
-        project["clip_start"] = c_start
-        project["clip_duration"] = c_dur
-        project["clip_loop"] = c_loop
-        StorageManager.save_project(project)
-
-        clip_info = f" (Trimmed: {c_start:.1f}s - {c_start+c_dur:.1f}s | {'Looping 🔁' if c_loop else 'Once'})" if c_dur else ""
-        return JSONResponse(content={
-            "status": "success",
-            "message": f"Successfully applied '{music_file.name}'{clip_info} (Voice: {int(vv*100)}% · Music: {int(mv*100)}%)!",
-            "video_path": str(remixed_path),
-            "project": project
-        }, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to apply music: {e}")
-
-@app.post("/api/music/trim-clip")
-def trim_clip_endpoint(req: TrimAudioClipRequest):
-    """Trims a selected segment from a music track and registers it in the saved library."""
-    from agents.music_generator import AIMusicGenerator
-    mg = AIMusicGenerator()
-    track_file = None
-    for t in mg.list_tracks():
-        if t["id"] == req.track_id or t["filename"] == req.track_id:
-            track_file = Path(t["file_path"])
-            break
-    if not track_file and Path(req.track_id).exists():
-        track_file = Path(req.track_id)
-    if not track_file or not track_file.exists():
-        raise HTTPException(status_code=404, detail=f"Source music track '{req.track_id}' not found.")
-
-    try:
-        new_track = mg.trim_and_save_clip(
-            source_path=track_file,
-            clip_start=float(req.clip_start or 0.0),
-            clip_duration=float(req.clip_duration or 10.0),
-            clip_name=req.clip_name
-        )
-        return JSONResponse(content={
-            "status": "success",
-            "message": f"Trimmed clip saved as '{new_track['name']}'!",
-            "track": new_track
-        }, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to trim audio clip: {e}")
-
-@app.post("/api/projects/{project_id}/remove-music")
-def remove_music_endpoint(project_id: str):
-    """Convenience endpoint to remove all background music from a video."""
-    return apply_music_endpoint(project_id, ApplyMusicRequest(remove_music=True))
 
 class MusicOnlyClipsRequest(BaseModel):
     category: Optional[str] = "Sleep Music"
@@ -2584,51 +1946,8 @@ class MusicOnlyClipsRequest(BaseModel):
     clip_duration: Optional[float] = None
     clip_loop: Optional[bool] = True
 
-@app.get("/api/music/options")
-def get_music_only_options_endpoint():
-    """Returns the Music-Only relaxation & meditation options (Sleep Music, Flute Meditation, Deep Relaxation, Binaural Beats, Raga Therapy)."""
-    from agents.music_agent import MusicAgent
-    return JSONResponse(content={
-        "options": MusicAgent.MUSIC_ONLY_OPTIONS,
-        "categories": MusicAgent.CATEGORIES
-    }, headers=NO_CACHE_HEADERS)
 
-@app.post("/api/music/create-clips")
-def create_music_only_clips_endpoint(req: MusicOnlyClipsRequest):
-    """Generates Music-Only relaxation track and creates synchronized 9:16 vertical visual video clips + full Short."""
-    from agents.music_agent import MusicAgent
-    agent = MusicAgent()
-    try:
-        res = agent.create_music_only_clips(
-            category=req.category or "Sleep Music",
-            mood=req.mood or "Relaxing",
-            vocals=req.vocals or "Instrumental",
-            duration=req.duration or 30.0,
-            clip_count=req.clip_count or 3,
-            prompt=req.prompt,
-            track_id=req.track_id,
-            clip_start=req.clip_start or 0.0,
-            clip_duration=req.clip_duration,
-            clip_loop=req.clip_loop if req.clip_loop is not None else True,
-        )
-        return JSONResponse(content=res, headers=NO_CACHE_HEADERS)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Music-only clips creation failed: {e}")
 
-@app.get("/api/music/clip-video/{project_id}/{filename}")
-def stream_music_clip_video(project_id: str, filename: str):
-    """Streams an individual generated visual clip MP4 from a Music-Only project."""
-    project = StorageManager.get_project_by_id(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    p_dir = Path(project.get("project_dir", ""))
-    safe_name = Path(filename).name
-    cand = p_dir / "clips" / safe_name
-    if not cand.exists():
-        cand = p_dir / safe_name
-    if not cand.exists():
-        raise HTTPException(status_code=404, detail="Clip video file not found")
-    return FileResponse(str(cand), media_type="video/mp4", headers=NO_CACHE_HEADERS)
 
 # ==========================================
 # Hindi Speaking Agent & Voiceover API
@@ -2773,85 +2092,22 @@ class CarQueueRefillRequest(BaseModel):
     force_reset: Optional[bool] = False
 
 
-@app.get("/api/car-queue")
-def get_car_queue_endpoint():
-    from app.automation import car_queue, notifier
-    slots = car_queue.get_queue(auto_fill=True)
-    return JSONResponse(
-        content={
-            "slots": slots,
-            "moods": car_queue.MOOD_ROTATION,
-            "channel": car_queue.CHANNEL_KEY,
-            "channel_id": car_queue.CHANNEL_ID,
-            "notifications": notifier.is_configured(),
-        },
-        headers=NO_CACHE_HEADERS,
-    )
 
 
-@app.post("/api/car-queue/refill")
-def refill_car_queue_endpoint(req: CarQueueRefillRequest):
-    from app.automation import car_queue
-    slots = car_queue.refill_7_day_queue(force_reset=bool(req.force_reset))
-    return JSONResponse(content={"status": "success", "slots": slots}, headers=NO_CACHE_HEADERS)
 
 
-@app.post("/api/car-queue/{slot_id}/update")
-def update_car_queue_slot_endpoint(slot_id: str, req: CarQueueUpdateRequest):
-    from app.automation import car_queue
-    updated = car_queue.update_slot(slot_id, req.dict(exclude_none=True))
-    if not updated:
-        raise HTTPException(status_code=404, detail=f"Queue slot '{slot_id}' not found")
-    return JSONResponse(content={"status": "success", "slot": updated, "slots": car_queue.get_queue(auto_fill=False)}, headers=NO_CACHE_HEADERS)
 
 
-@app.post("/api/car-queue/{slot_id}/run")
-def run_car_queue_slot_endpoint(slot_id: str, background_tasks: BackgroundTasks):
-    """Runs one slot from the 7-day Car Edit queue in the background and dispatches Telegram approval."""
-    from app.automation import car_queue
-    slots = car_queue.get_queue(auto_fill=True)
-    slot = next((s for s in slots if s.get("id") == slot_id), None)
-    if not slot:
-        raise HTTPException(status_code=404, detail=f"Queue slot '{slot_id}' not found")
-
-    enq = car_queue.enqueue_slot_job(slot_id=slot_id)
-    job = enq["job"]
-
-    def _worker():
-        try:
-            from app.automation import jobs as _jobs
-            claimed = _jobs.claim_next() or job
-            res = car_queue.run_car_edit_job(claimed)
-            _jobs.complete(claimed["id"], res)
-        except Exception as e:
-            car_queue.update_slot(slot_id, {"status": "failed", "error": str(e)[:300]})
-            print(f"[CarQueue] Slot {slot_id} failed: {e}")
-
-    background_tasks.add_task(_worker)
-    return JSONResponse(
-        content={
-            "status": "started",
-            "slot_id": slot_id,
-            "job_id": job["id"],
-            "car_name": slot["car_name"],
-            "mood_label": slot["mood_label"],
-            "message": f"Started Daily Car Edit for '{slot['car_name']}' ({slot['mood_label']})",
-        },
-        headers=NO_CACHE_HEADERS,
-    )
 
 
-@app.post("/api/car-queue/poll-telegram")
-def poll_telegram_approvals_endpoint():
-    """Polls Telegram getUpdates for any Approve/Reject button presses and updates project + queue status."""
-    from app.automation import car_queue, notifier, publish_gate
-    handled = notifier.poll_decisions(publish_gate.handle_decision)
-    return JSONResponse(
-        content={
-            "status": "success",
-            "handled_decisions": handled,
-            "slots": car_queue.get_queue(auto_fill=False),
-        },
-        headers=NO_CACHE_HEADERS,
-    )
 
+
+
+# ------------------------------------------------------------------------------------------------
+# Route groups split into app/routes/ (imported last: they use the models/helpers defined above)
+# ------------------------------------------------------------------------------------------------
+from app.routes import agents as _routes_agents, car_queue as _routes_car_queue, music as _routes_music, \
+    settings as _routes_settings  # noqa: E402
+
+for _r in (_routes_music, _routes_car_queue, _routes_agents, _routes_settings):
+    app.include_router(_r.router)
