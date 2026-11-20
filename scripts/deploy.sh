@@ -13,6 +13,10 @@ WEB="com.aishortsstudio.web"
 SCHED="com.aishortsstudio.scheduler"
 PORT="${STUDIO_PORT:-8000}"
 MODE="${1:-}"
+# the dashboard may require the studio token (STUDIO_API_TOKEN in .env)
+TOKEN="$(grep -E '^STUDIO_API_TOKEN=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+AUTH=()
+[ -n "$TOKEN" ] && AUTH=(-H "X-Studio-Token: $TOKEN")
 
 busy() {  # prints what is busy; exit status 0 = busy
   "$PY" - <<'PYEOF'
@@ -66,7 +70,7 @@ fi
 echo "4/4 Verifying..."
 ok_web=0; ok_worker=0
 for _ in $(seq 1 30); do
-  curl -sf "http://127.0.0.1:$PORT/api/ui-build" >/dev/null && ok_web=1
+  curl -sf "${AUTH[@]}" "http://127.0.0.1:$PORT/api/ui-build" >/dev/null && ok_web=1
   "$PY" -c "import sys; sys.path.insert(0,'.'); from app.automation import jobs; sys.exit(0 if jobs.worker_alive('studio_generate') else 1)" && ok_worker=1
   [ $ok_web = 1 ] && [ $ok_worker = 1 ] && break
   sleep 3

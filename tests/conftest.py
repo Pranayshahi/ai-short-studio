@@ -19,6 +19,7 @@ os.environ["AI_SHORTS_AUDIO_DIR"] = str(_TMP / "audio")
 os.environ["AI_SHORTS_CREDENTIALS_DIR"] = str(_TMP / "credentials")
 os.environ["AI_SHORTS_PHOTO_LIBRARY_DIR"] = str(_TMP / "photo_library")
 os.environ.setdefault("SCRIPT_WRITER", "template")   # never call the local LLM from tests
+os.environ["STUDIO_API_TOKEN"] = ""                    # the real .env token must not gate test requests
 os.environ.setdefault("THEME_MUSIC", "on")
 for sub in ("output", "audio", "credentials"):
     (_TMP / sub).mkdir(parents=True, exist_ok=True)

@@ -92,7 +92,10 @@ def _check_memory() -> Tuple[bool, str]:
 
 
 def _check_dashboard() -> Tuple[bool, str]:
-    code, _ = _http_status("http://127.0.0.1:8000/", timeout=5)
+    import os as _os
+    tok = _os.getenv("STUDIO_API_TOKEN", "").strip()
+    headers = {"User-Agent": "AIShortsStudio/2.1", **({"X-Studio-Token": tok} if tok else {})}
+    code, _ = _http_status("http://127.0.0.1:8000/api/ui-build", headers=headers, timeout=5)
     if code == 200:
         return True, "up"
     # The dashboard is optional for hands-off runs; only alert if you said it must always be up
