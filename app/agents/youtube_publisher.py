@@ -22,6 +22,11 @@ SCOPES = [
 ]
 
 
+# Automatic "altered or synthetic content" label. Off by default: the owner adds it in YouTube Studio
+# when required. AUTO_AI_LABEL=on in .env makes the app set it for videos with AI motion clips / AI images.
+AUTO_AI_LABEL = os.getenv("AUTO_AI_LABEL", "off").strip().lower() in ("on", "1", "true", "yes")
+
+
 def uses_synthetic_media(project: Optional[Dict[str, Any]]) -> bool:
     """YouTube's 'altered or synthetic content' disclosure: required for realistic AI-made or AI-altered
     footage. True when the video has an AI motion clip (photos animated by LTX/Wan/Phosphene) or an
@@ -338,7 +343,9 @@ class YouTubePublisher:
                 "publicStatsViewable": filled["publicStatsViewable"],
                 "license": filled["license"],
                 # AI disclosure ("altered or synthetic content") - it was computed but never sent before
-                "containsSyntheticMedia": True if synthetic is None else bool(synthetic),
+                # AI label: the owner sets it in YouTube Studio when needed (user, 2026-11-20); the app only
+                # labels automatically if AUTO_AI_LABEL=on
+                "containsSyntheticMedia": (True if synthetic is None else bool(synthetic)) if AUTO_AI_LABEL else False,
             },
         }
 
@@ -524,10 +531,21 @@ class YouTubePublisher:
                             "selfDeclaredMadeForKids": False,
                             "embeddable": True,
                             "publicStatsViewable": True,
-                            # an update without it could clear the disclosure set at upload
-                            "containsSyntheticMedia": uses_synthetic_media(project),
                         },
                     }
+                    # Keep the AI label exactly as it is on YouTube (e.g. set by hand in Studio): an update that
+                    # leaves the field out could reset it. Only AUTO_AI_LABEL=on lets the app decide.
+                    current = None
+                    try:
+                        items = youtube.videos().list(part="status", id=video_id).execute().get("items") or []
+                        if items:
+                            current = (items[0].get("status") or {}).get("containsSyntheticMedia")
+                    except Exception as e:
+                        print(f"[YouTubePublisher] couldn't read the current AI label ({e}); leaving it out")
+                    if AUTO_AI_LABEL:
+                        update_body["status"]["containsSyntheticMedia"] = bool(current) or uses_synthetic_media(project)
+                    elif current is not None:
+                        update_body["status"]["containsSyntheticMedia"] = bool(current)
                     youtube.videos().update(part="snippet,status", body=update_body).execute()
                     studio_edit_url = f"https://studio.youtube.com/video/{video_id}/edit"
                     print(f"[YouTubePublisher] ✅ Video {video_id} approved and kept PRIVATE: {studio_edit_url}")
