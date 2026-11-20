@@ -34,6 +34,15 @@ class WeaponXPosterMixin:
           Center: Realistic horizontal side-profile cutout of the weapon on pure white
           Right: Two bold black bullet point specs (e.g., • Cartridge - 7.62×39 mm. / • No. built - 75 million)
         """
+        # A chart the user previewed and approved in the dashboard is used exactly as approved
+        preview = image_data.get("chart_preview") or {}
+        if preview.get("path") and Path(preview["path"]).exists() and preview.get("record"):
+            import shutil as _sh
+            _sh.copyfile(preview["path"], dest_path)
+            rec = dict(preview["record"])
+            rec["image_path"] = str(dest_path)
+            print(f"   ✓ [{self.AGENT_NAME}] Using the chart approved in the preview ({len(rec.get('ranked_items') or [])} rows)")
+            return rec
         poster_spec = image_data.get("weaponx_poster_spec") or {}
         # The user's request can arrive as the topic itself, as image_data.topic, or as the image prompt
         request_texts = [image_data.get("topic") or "", clean_topic or "", image_data.get("master_image_prompt") or "",

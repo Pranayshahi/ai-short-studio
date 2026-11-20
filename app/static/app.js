@@ -438,7 +438,7 @@ function renderGrid(projects) {
   }).join('');
 }
 
-async function triggerGenerate(style = 'default') {
+async function triggerGenerate(style = 'default', chartPreviewId = null) {
   const topicInput = document.getElementById('customTopicInput');
   const topic = topicInput.value.trim() || null;
   const audioMode = document.getElementById('audioModeSelect')?.value || 'with_voice';
@@ -516,7 +516,8 @@ async function triggerGenerate(style = 'default') {
         language: selectedLang,
         voice: selectedVoice,
         music_track: selectedMusicTrack,
-        music_volume: 0.22
+        music_volume: 0.22,
+        chart_preview_id: chartPreviewId
       })
     });
     
@@ -1930,6 +1931,56 @@ async function approveActiveProjectLive(overrideQa = false) {
       btnApprove.textContent = '✅ Approve (stays Private)';
     }
   }
+}
+
+// ---- WeaponX chart preview: build the chart, drop rows, then make the video with it -------------
+let chartPreviewState = null;
+
+async function openChartPreview(exclude = null) {
+  const topic = (document.getElementById('customTopicInput')?.value || '').trim() || (chartPreviewState && chartPreviewState.topic);
+  let modal = document.getElementById('chartPreviewModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'chartPreviewModal';
+    modal.className = 'fb-modal-backdrop';
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  }
+  if (!topic) {
+    modal.innerHTML = `<div class="fb-modal">Type a WeaponX topic first (e.g. "Cruise Missiles", "Modern Torpedoes"). <button class="fb-del" onclick="document.getElementById('chartPreviewModal').remove()">✕</button></div>`;
+    return;
+  }
+  modal.innerHTML = `<div class="fb-modal"><div style="color:#94a3b8;">⏳ Building a verified chart for "${escapeHtml(topic)}" (checking every photo; up to a few minutes)…</div></div>`;
+  const body = { topic };
+  if (exclude && chartPreviewState) { body.preview_id = chartPreviewState.preview_id; body.exclude = [exclude]; }
+  const res = await fetch('/api/chart-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    modal.innerHTML = `<div class="fb-modal">⚠️ ${escapeHtml(typeof d.detail === 'string' ? d.detail : 'Could not build the chart')} <button class="fb-del" onclick="document.getElementById('chartPreviewModal').remove()">✕</button></div>`;
+    return;
+  }
+  chartPreviewState = d;
+  const rows = (d.rows || []).map(r => `
+    <div class="fb-item" style="display:flex; justify-content:space-between; align-items:center;">
+      <div><strong>${escapeHtml(r.name || '')}</strong> <span style="color:#94a3b8;">${escapeHtml(r.country || '')} ${escapeHtml(String(r.year || ''))}</span>
+        <div style="font-size:11px; color:#cbd5e1;">${escapeHtml((r.bullets || []).join(' · '))}</div></div>
+      <button class="btn btn-secondary btn-xs" title="Replace this row with another verified weapon" onclick='openChartPreview(${JSON.stringify(r.article || r.name)})'>✕ Replace</button>
+    </div>`).join('');
+  modal.innerHTML = `
+    <div class="fb-modal" style="width:min(960px,100%);" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <strong style="font-size:15px;">👁 Chart preview · ${escapeHtml(d.topic)}</strong>
+        <button class="fb-del" onclick="document.getElementById('chartPreviewModal').remove()">✕</button>
+      </div>
+      <div style="display:flex; gap:14px; flex-wrap:wrap;">
+        <img src="${d.image_url}?t=${Date.now()}" style="width:300px; max-width:100%; border-radius:8px; background:#fff;">
+        <div style="flex:1; min-width:260px;">
+          <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Every row is a Wikipedia-verified model with a checked photo. Replace any row you don't like; the other rows stay.</div>
+          ${rows}
+          <button class="btn btn-primary" style="margin-top:10px;" onclick="document.getElementById('chartPreviewModal').remove(); triggerGenerate('weaponx', '${d.preview_id}')">🔥 Create WeaponX video with this chart</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 // ---- Performance: YouTube stats per video, and what works by style / music theme / channel -----

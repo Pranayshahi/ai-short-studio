@@ -335,6 +335,15 @@ class ShortsPipeline:
             print(f"-> Scenes: {len(script_data['scenes'])} scenes verified & corrected")
 
             # Step 3: Image Generator Agent (deep search, source check, topic match & CHANGE_IMAGE replacement)
+            # WeaponX: a chart approved in the dashboard preview is used as-is (no rebuild)
+            if project_record.get("chart_preview_id") and isinstance(script_data.get("image_data"), dict):
+                try:
+                    from app.automation import chart_preview
+                    meta = chart_preview.load(project_record["chart_preview_id"])
+                    if meta:
+                        script_data["image_data"]["chart_preview"] = meta
+                except Exception as e:
+                    print(f"[ChartPreview] not used: {e}")
             print(f"\n[Step 3/7] 🖼️ Running 'image-generator' agent using image_data from content-analyser...")
             project_record["progress_step"] = "image-generator: Generating & verifying topic images..."
             StorageManager.save_project(project_record)

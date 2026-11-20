@@ -222,6 +222,8 @@ class GenerateRequest(BaseModel):
     # 3. Motion clips on every scene (optional toggle: LTX-2.3 / Wan 2.2 on HF, or local Phosphene LTX-2.5)
     animate_all_scenes: Optional[bool] = False
     clip_engine: Optional[str] = "auto"
+    # WeaponX: a chart approved in the dashboard preview (POST /api/chart-preview) is used as-is
+    chart_preview_id: Optional[str] = None
 
 class PublishRequest(BaseModel):
     override_qa: bool = False  # 'Approve anyway' after seeing the failed quality checks
@@ -554,6 +556,10 @@ def _start_generation(req, audio_mode, with_voice, with_music, duration, backgro
         project_record["car_motion_preset"] = getattr(req, "car_motion_preset", "swxft_dynamic") or "swxft_dynamic"
         project_record["phonk_style"] = getattr(req, "phonk_style", "drift_phonk") or "drift_phonk"
         project_record["beat_sync_mode"] = getattr(req, "beat_sync_mode", "swxft_velocity") or "swxft_velocity"
+        StorageManager.save_project(project_record)
+
+    if req.chart_preview_id:
+        project_record["chart_preview_id"] = req.chart_preview_id
         StorageManager.save_project(project_record)
 
     if getattr(req, "animate_all_scenes", False):
@@ -2145,7 +2151,9 @@ class CarQueueRefillRequest(BaseModel):
 # Route groups split into app/routes/ (imported last: they use the models/helpers defined above)
 # ------------------------------------------------------------------------------------------------
 from app.routes import agents as _routes_agents, car_queue as _routes_car_queue, music as _routes_music, \
-    settings as _routes_settings, photo_library as _routes_photo_library, analytics as _routes_analytics  # noqa: E402
+    settings as _routes_settings, photo_library as _routes_photo_library, analytics as _routes_analytics, \
+    chart_preview as _routes_chart_preview  # noqa: E402
 
-for _r in (_routes_music, _routes_car_queue, _routes_agents, _routes_settings, _routes_photo_library, _routes_analytics):
+for _r in (_routes_music, _routes_car_queue, _routes_agents, _routes_settings, _routes_photo_library, _routes_analytics,
+           _routes_chart_preview):
     app.include_router(_r.router)
