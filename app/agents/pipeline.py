@@ -28,6 +28,51 @@ def slugify(text: str) -> str:
     return re.sub(r"[-\s]+", "-", text)[:40]
 
 
+DESCRIPTION_LIMIT = 4900  # YouTube allows 5,000 characters
+
+
+def _with_credits_block(description: str, credits: List[str]) -> str:
+    """Appends EVERY photo credit (CC BY/BY-SA require attribution - the old 12-line cap dropped some).
+    If the description would get too long, the credit lines get shorter, never fewer."""
+    base = re.sub(r"\n*Photo credits:\n.*\Z", "", description or "", flags=re.S).rstrip()
+    block = "\n\nPhoto credits:\n" + "\n".join(credits)
+    if len(base) + len(block) > DESCRIPTION_LIMIT:
+        short = [re.sub(r"https?://(www\.)?", "", c) for c in credits]
+        block = "\n\nPhoto credits:\n" + "\n".join(short)
+    if len(base) + len(block) > DESCRIPTION_LIMIT:
+        base = base[: max(200, DESCRIPTION_LIMIT - len(block))].rstrip()
+    return (base + block)[:5000]
+
+
+def refresh_photo_credits(project: Dict[str, Any]) -> None:
+    """Rebuilds the credits from the photos the video uses NOW (after auto-repair, feedback or a chart
+    rebuild replaced images, the description used to keep crediting the old photographers)."""
+    credits = photo_credit_lines(project.get("visual_records") or [])
+    desc = project.get("description") or ""
+    if credits:
+        project["description"] = _with_credits_block(desc, credits)
+    elif "Photo credits:" in desc:
+        project["description"] = re.sub(r"\n*Photo credits:\n.*\Z", "", desc, flags=re.S).rstrip()
+
+
+def photo_credit_lines(visual_records: List[Dict[str, Any]]) -> List[str]:
+    credits, seen = [], set()
+    poster_rec = next((v for v in visual_records if v.get("ranked_items") or v.get("evolution_pairs")), None)
+    if poster_rec:
+        from agents import evolution_poster as _evp
+        return _evp.compact_credits(poster_rec.get("photo_credits") or [])
+    for v in visual_records:
+        if v.get("source") != "web_free" or str(v.get("source_url", "")).startswith("reframed://"):
+            continue
+        link = v.get("page_url") or v.get("source_url")
+        if not link or link in seen:
+            continue
+        seen.add(link)
+        author = re.sub(r"\s+", " ", str(v.get("author") or "Unknown")).strip()[:60]
+        credits.append(f"• {author} · {v.get('license') or 'see source'} · {link}")
+    return credits
+
+
 def attach_visual_metadata(script_data: Dict[str, Any], visual_records: List[Dict[str, Any]]) -> None:
     """Photo credits + poster-based description + per-scene source fields. Shared by the pipeline and
     the WeaponX regenerate endpoint (which used to skip it: no credits, scenes without visual_source)."""
@@ -61,8 +106,7 @@ def attach_visual_metadata(script_data: Dict[str, Any], visual_records: List[Dic
         script_data["description"] = "\n\n".join(x for x in (intro, body, tags_line) if x)
         credits = _evp.compact_credits(poster_rec.get("photo_credits") or [])
     if credits and "Photo credits:" not in script_data.get("description", ""):
-        script_data["description"] = (script_data.get("description", "").rstrip()
-                                      + "\n\nPhoto credits:\n" + "\n".join(credits[:12]))[:4900]
+        script_data["description"] = _with_credits_block(script_data.get("description", ""), credits)
 
     # Attach source & topic-match metadata to scenes
     for idx, sc in enumerate(script_data.get("scenes", [])):
@@ -1041,6 +1085,9 @@ class ShortsPipeline:
             project["audio_path"] = voice_result["audio_path"]
         else:
             project["audio_path"] = None
+
+        # Credits follow the photos the video uses now (images may have been replaced since creation)
+        refresh_photo_credits(project)
 
         # 4. Verify-video inspection
         qa_report = self.verify_video.run(project_record=project)
