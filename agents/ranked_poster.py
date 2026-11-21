@@ -312,8 +312,10 @@ def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[Li
         if m is None:
             skipped.append(f"{it['name']}: no Wikipedia article with a photo found")
             continue
+        # the user named this model: only the broad category must match (an APC list may include the VBCI,
+        # which Wikipedia types 'infantry fighting vehicle'); a sight, a missile or a truck is still rejected
         if not twl._is_kind({**m, "origin": m.get("origin") or it.get("country") or "x"}, kind,
-                            KINDS.get(kind, KINDS["vehicle"])["kind_re"], sub):
+                            KINDS.get(kind, KINDS["vehicle"])["kind_re"], None):
             skipped.append(f"{it['name']}: Wikipedia says '{m['title']}' is a {(m.get('type') or 'different system')[:40]}")
             continue
         if m["title"] in used or _norm(m["title"]) in excluded:

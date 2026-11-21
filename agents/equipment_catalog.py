@@ -107,7 +107,7 @@ def _infobox(wikitext: str) -> Dict[str, str]:
     # Comments can sit in front of a field on the same line ("<!-- Service history -->| service = ...")
     wikitext = re.sub(r"<!--.*?-->", "\n", wikitext, flags=re.S)
     # field names may contain spaces ("national origin" = "national_origin")
-    for m in re.finditer(r"^\s*\|\s*([A-Za-z_0-9][A-Za-z_0-9 -]*?)\s*=\s*(.*?)(?=^\s*\||^\}\}|\Z)", wikitext, flags=re.M | re.S):
+    for m in re.finditer(r"^\s*\|\s*([A-Za-z_0-9][A-Za-z_0-9 -]*?)\s*=\s*(.*?)(?=^\s*\|\s*[A-Za-z_0-9][A-Za-z_0-9 -]*?\s*=|^\}\}|\Z)", wikitext, flags=re.M | re.S):
         fields[re.sub(r"[ -]+", "_", m.group(1).lower())] = m.group(2).strip()
     return fields
 
@@ -207,6 +207,15 @@ def _specs(fb: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
+def _type_text(raw: str) -> str:
+    """Infobox type, list templates unpacked: '{{ubl|Heavy APC|Combat engineering vehicle}}' (Namer) ->
+    'Heavy APC; Combat engineering vehicle' (it used to come out as '{{ubl')."""
+    t = re.sub(r"\{\{\s*(?:ubl|unbulleted list|plainlist|plain list|flatlist|hlist|idp|bulleted list)\s*\|", "", raw or "", flags=re.I)
+    t = _clean(t)
+    parts = [x.strip(" *|{}-") for x in re.split(r"\||\n|\*|<br\s*/?>", t)]
+    return "; ".join(x for x in parts if x and not x.startswith("{{"))
+
+
 def _origin(fb: Dict[str, str]) -> str:
     o = _clean(fb.get("origin", "") or fb.get("place-of-origin", "") or fb.get("place_of_origin", "")
                or fb.get("national_origin", ""))  # aircraft infoboxes
@@ -238,6 +247,13 @@ def fetch_models(titles: List[str], thumb: int = 640) -> Dict[str, Dict[str, Any
             lead = _clean(lead[m_bold.start():m_bold.start() + 600]) if m_bold else ""
             status = _clean(fb.get("status", "")).lower()
             origin = _origin(fb) or _nationality(lead)
+            # several origins ('Soviet Union <br/> Israel' for the Achzarit, an Israeli rebuild of a Soviet
+            # hull): the country the article's opening sentence names is the one that made THIS model
+            raw_o = _clean(fb.get("origin", "") or fb.get("place_of_origin", "") or fb.get("national_origin", ""))
+            listed = [x.strip().lower() for x in re.split(r";|,|/| and |\n|<br\s*/?>", raw_o) if x.strip()]
+            nat = _nationality(lead)
+            if len(listed) > 1 and nat and any(nat.lower() in x for x in listed):
+                origin = nat
             out[pg["title"]] = {
                 "title": pg["title"],
                 "requested_as": back.get(pg["title"], pg["title"]),
@@ -247,7 +263,7 @@ def fetch_models(titles: List[str], thumb: int = 640) -> Dict[str, Dict[str, Any
                 "specs": _specs(fb),
                 "calibre_mm": _calibre_mm(fb),
                 "weight_t": _weight_t(fb),
-                "type": _clean(fb.get("type", "") or fb.get("aircraft_type", "")),  # aircraft: aircraft_type
+                "type": _type_text(fb.get("type", "") or fb.get("aircraft_type", "")),  # aircraft: aircraft_type
                 "status": status[:60],
                 "lead": lead[:300],
                 "article_length": pg.get("length", 0),

@@ -174,7 +174,10 @@ _SUBTYPES: List[Tuple[str, str, str, List[str]]] = [
      r"anti-?\s?tank|tank destroyer|infantry|personnel|amphibious|recovery|bridge|engineer|reconnaissance|light tank",
      ["main battle tank", "third-generation main battle tank"]),
     (r"infantry fighting|\bifvs?\b", r"infantry fighting", r"anti-?\s?tank", ["infantry fighting vehicle"]),
-    (r"\bapcs?\b|personnel carrier", r"personnel carrier", r"anti-?\s?tank", ["armoured personnel carrier"]),
+    # APC families are often typed 'Armoured fighting vehicle' (Boxer, Eitan, Piranha V, AMPV) or 'Heavy APC'
+    (r"\bapcs?\b|personnel carrier", r"personnel carrier|\bapc\b|armou?red fighting vehicle|infantry carrier|troop carrier|multi-?purpose vehicle",
+     r"anti-?\s?tank|^infantry fighting vehicle|tank destroyer|assault gun|main battle tank|armou?red car|reconnaissance|self-propelled",
+     ["armoured personnel carrier", "wheeled armoured fighting vehicle", "heavy armoured personnel carrier"]),
     (r"handgun|pistol", r"pistol|handgun|revolver", r"submachine|machine pistol|rifle|carbine", ["semi-automatic pistol"]),
     (r"sniper", r"sniper|marksman|anti-materiel", r"", ["sniper rifle"]),
     (r"assault rifle", r"assault rifle|battle rifle", r"", ["assault rifle"]),
@@ -359,7 +362,8 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
     spec = rp.KINDS.get(kind, rp.KINDS["missile"])
     kind_re, words = spec["kind_re"], spec["words"]
     sub = subtype_for(topic)
-    modern = bool(re.search(r"\bmodern|current|today|new(?:est)?\b", topic, re.I))
+    # "most advanced / latest / best" lists mean today's systems too (an APC chart showed a 1943 Kangaroo)
+    modern = bool(re.search(r"\bmodern|current|today|new(?:est)?\b|advanced|latest|best|most capable|deadliest|powerful", topic, re.I))
     excluded = {t.lower() for t in (exclude_titles or [])}
     verified: Dict[str, Dict[str, Any]] = {}
     if keep_titles:
