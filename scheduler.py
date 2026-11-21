@@ -241,6 +241,28 @@ _CURRENT: Dict[str, Any] = {}
 JOB_MAX_MINUTES = float(os.getenv("JOB_MAX_MINUTES", "90"))
 
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def keep_awake(reason: str):
+    """Keeps the Mac from idle-sleeping while work runs (macOS `caffeinate -i`); closing the lid still
+    sleeps it. Overnight jobs used to pause for hours because the Mac went to sleep."""
+    import shutil as _sh
+    import subprocess as _sp
+    proc = None
+    if _sh.which("caffeinate"):
+        try:
+            proc = _sp.Popen(["caffeinate", "-i"], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        except Exception:
+            proc = None
+    try:
+        yield
+    finally:
+        if proc:
+            proc.terminate()
+
+
 def job_watchdog():
     """A video normally takes 3-15 minutes. One stuck for JOB_MAX_MINUTES (a 2026-11-20 daily Short hung
     for 12 h inside image generation and blocked the queue and the nightly music pool) is stopped: all
@@ -252,7 +274,9 @@ def job_watchdog():
     cur = dict(_CURRENT)
     if not cur:
         return
-    minutes = (time.time() - cur["started"]) / 60
+    # monotonic: on macOS this clock stops while the Mac sleeps, so a job paused by sleep is never
+    # mistaken for a stuck one (a daily Short "took" 12 h on 2026-11-20 because the Mac slept overnight)
+    minutes = (time.monotonic() - cur["started"]) / 60
     if minutes < JOB_MAX_MINUTES:
         return
     print(f"⏱️ [Watchdog] Job {cur['id']} ({cur['kind']}) has run {minutes:.0f} min (limit {JOB_MAX_MINUTES:.0f}). "
@@ -299,10 +323,11 @@ def _process_one():
     if not job:
         return None
     _CURRENT.clear()
-    _CURRENT.update(id=job["id"], kind=job["kind"], started=time.time(),
+    _CURRENT.update(id=job["id"], kind=job["kind"], started=time.monotonic(),
                     project_id=(job.get("params") or {}).get("project_id") or job.get("project_id"))
     try:
-        return _run_claimed(job)
+        with keep_awake(f"video job {job['id']}"):
+            return _run_claimed(job)
     finally:
         _CURRENT.clear()
 
@@ -350,7 +375,7 @@ def build_music_library():
         except Exception:
             pass
     try:
-        with resources.lease("acestep"):  # one cold start for the whole batch
+        with keep_awake("nightly music"), resources.lease("acestep"):  # one cold start for the whole batch
             pool = theme_music.refill_pool(max_tracks=int(os.getenv("THEME_POOL_NIGHTLY", "16")),
                                            deadline=_t.time() + 100 * 60)
             lib = music_library.build_overnight(max_tracks=3)
@@ -470,7 +495,10 @@ def main():
     scheduler.add_job(analytics.refresh, "cron", hour=7, minute=15, id="youtube_analytics", coalesce=True,
                       max_instances=1, misfire_grace_time=6 * 3600)
     from app.automation import backup
-    scheduler.add_job(backup.run_backup, "cron", hour=3, minute=30, id="nightly_backup", coalesce=True,
+    def _backup_awake():
+        with keep_awake("nightly backup"):
+            return backup.run_backup()
+    scheduler.add_job(_backup_awake, "cron", hour=3, minute=30, id="nightly_backup", coalesce=True,
                       max_instances=1, misfire_grace_time=6 * 3600)
     m_hour, m_min = map(int, os.getenv("MUSIC_LIBRARY_TIME", "02:30").split(":"))
     scheduler.add_job(build_music_library, "cron", hour=m_hour, minute=m_min, id="music_library",

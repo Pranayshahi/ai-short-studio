@@ -15,7 +15,7 @@ def test_stuck_job_is_stopped(tmp_path, capsys):
     jobs.claim(job["id"])
     StorageManager.save_project({"id": "wd_proj", "topic": "T", "status": "in_progress", "project_dir": str(tmp_path)})
     scheduler._CURRENT.update(id=job["id"], kind="studio_generate", project_id="wd_proj",
-                              started=time.time() - (scheduler.JOB_MAX_MINUTES + 5) * 60)
+                              started=time.monotonic() - (scheduler.JOB_MAX_MINUTES + 5) * 60)
     with mock.patch.object(scheduler.os, "_exit", side_effect=SystemExit(3)), mock.patch.object(scheduler.notifier, "send"):
         with pytest.raises(SystemExit):
             scheduler.job_watchdog()
@@ -30,7 +30,28 @@ def test_stuck_job_is_stopped(tmp_path, capsys):
 
 def test_normal_job_is_left_alone():
     import scheduler
-    scheduler._CURRENT.update(id="x", kind="studio_generate", started=time.time() - 60)
+    scheduler._CURRENT.update(id="x", kind="studio_generate", started=time.monotonic() - 60)
     with mock.patch.object(scheduler.os, "_exit", side_effect=AssertionError("killed a healthy job")):
         scheduler.job_watchdog()
     scheduler._CURRENT.clear()
+
+
+def test_watchdog_uses_a_sleep_aware_clock():
+    """A job paused while the Mac slept must not be killed when it wakes (wall-clock time jumps)."""
+    import inspect
+    import scheduler
+    src = inspect.getsource(scheduler.job_watchdog) + inspect.getsource(scheduler._process_one)
+    assert "time.monotonic()" in src and "time.time() - cur" not in src
+
+
+def test_keep_awake_starts_and_stops_caffeinate():
+    import scheduler
+    procs = []
+
+    class P:
+        def __init__(self, *a, **k): procs.append(self); self.stopped = False
+        def terminate(self): self.stopped = True
+    with mock.patch("subprocess.Popen", P), mock.patch("shutil.which", lambda n: "/usr/bin/caffeinate"):
+        with scheduler.keep_awake("test"):
+            assert procs and not procs[0].stopped
+    assert procs[0].stopped
