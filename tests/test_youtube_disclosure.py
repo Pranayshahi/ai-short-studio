@@ -84,3 +84,20 @@ def test_publish_and_approve_never_open_a_sign_in_window():
     from app.agents.youtube_publisher import YouTubePublisher as YP
     src = inspect.getsource(YP)
     assert 'interactive=not ch["token_path"].exists()' not in src
+
+
+def test_weapon_videos_get_the_owners_hashtags():
+    from agents.youtube_metadata import apply_weapon_hashtags, weapon_hashtags
+    tags = weapon_hashtags()
+    assert tags[0] == "#defense" and "#ak47shorts" in tags and tags[-1] == "#trending" and len(tags) == 18
+    desc = "The T-90 entered service in 1992.\n\n#Shorts #WeaponXLabs #MilitaryTech\n#Defense"
+    d, t = apply_weapon_hashtags(desc, ["t-90", "tank"])
+    assert d.startswith("The T-90 entered service in 1992.") and d.endswith(" ".join(tags))
+    assert "#WeaponXLabs" not in d, "old hashtag-only lines are replaced by the owner's set"
+    assert apply_weapon_hashtags(d, t) == (d, t), "idempotent"
+    assert t[:2] == ["t-90", "tank"] and "ak47shorts" in t
+    from app.agents.youtube_publisher import YouTubePublisher as YP
+    meta = None \
+        if False else YP.build_complete_fields("T-90 #Shorts", desc, ["tank"], channel="weaponxlabs")
+    if meta:
+        assert meta["description"].count("#ak47shorts") == 1

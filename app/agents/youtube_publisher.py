@@ -1,4 +1,5 @@
 import os
+import re
 import json
 from datetime import datetime
 from pathlib import Path
@@ -231,6 +232,12 @@ class YouTubePublisher:
             if is_car_chan
             else ["#Shorts", "#WeaponXLabs", "#MilitaryTech", "#Defense"]
         )
+        weapon_video = not is_car_chan and "#musiconly" not in clean_desc.lower()
+        if weapon_video:
+            # the owner's standard weapon hashtag set, exactly (assets/data/weapon_hashtags.txt)
+            from agents.youtube_metadata import apply_weapon_hashtags
+            clean_desc, tags = apply_weapon_hashtags(clean_desc, list(tags or []))
+            required_hashtags = []
         for ht in required_hashtags:
             if ht.lower() not in clean_desc.lower():
                 clean_desc = f"{clean_desc}\n{ht}".strip()
@@ -262,7 +269,7 @@ class YouTubePublisher:
         deduped_tags: List[str] = []
         total_tag_chars = 0
         for t in raw_tags:
-            t_clean = str(t).strip().lstrip("#")
+            t_clean = re.sub(r"\s*#\w+", "", str(t).strip().lstrip("#")).strip() or str(t).strip().lstrip("#")  # no '#Shorts' inside a tag
             if not t_clean or t_clean.lower() in [x.lower() for x in deduped_tags]:
                 continue
             if total_tag_chars + len(t_clean) > 460:

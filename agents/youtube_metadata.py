@@ -14,6 +14,7 @@ What counts as prompt text:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 TITLE_MAX = 100
@@ -198,3 +199,39 @@ def leaks(title: str, description: str, tags: List[str], topic: str = "") -> Lis
     if bad_tags:
         problems.append(f"tag(s) contain prompt text or are too long: {str(bad_tags[0])[:60]!r}")
     return problems
+
+
+# ------------------------------------------------------------------ weapon-channel hashtags
+# The owner's standard hashtag set for every weapon video (2026-11-21). Edit the file to change it.
+WEAPON_HASHTAGS_FILE = Path(__file__).resolve().parent.parent / "assets" / "data" / "weapon_hashtags.txt"
+_DEFAULT_WEAPON_HASHTAGS = ("#defense #defence #military #Firearms #weaponshorts #ak47shorts #m4a1gun #mp5 "
+                            "#militarytechnology #gunhistory #defensetech #defencetechnology #history #army "
+                            "#evolution #shorts #youtubeshorts #trending")
+
+
+def weapon_hashtags() -> List[str]:
+    try:
+        text = WEAPON_HASHTAGS_FILE.read_text(encoding="utf-8")
+    except Exception:
+        text = _DEFAULT_WEAPON_HASHTAGS
+    tags = [t for t in re.findall(r"#[\w]+", text)]
+    return list(dict.fromkeys(tags)) or re.findall(r"#[\w]+", _DEFAULT_WEAPON_HASHTAGS)
+
+
+def apply_weapon_hashtags(description: str, tags: List[str]) -> Tuple[str, List[str]]:
+    """Description ends with exactly the standard hashtag block (lines made only of hashtags are replaced;
+    hashtags inside sentences stay); the same words go into the YouTube tags. Idempotent."""
+    block = weapon_hashtags()
+    lines = [ln for ln in (description or "").rstrip().splitlines()
+             if not re.fullmatch(r"\s*(?:#[\w]+\s*)+", ln)]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    desc = ("\n".join(lines).rstrip() + "\n\n" + " ".join(block)).strip()
+    words = [h.lstrip("#") for h in block]
+    seen, out = set(), []
+    for t in list(tags or []) + words:
+        k = str(t).strip().lstrip("#").lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(str(t).strip().lstrip("#"))
+    return desc, out

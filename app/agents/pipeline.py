@@ -642,6 +642,9 @@ class ShortsPipeline:
             clean_title, clean_description, clean_tags = clean_metadata(
                 script_data.get("title_hindi") if is_hindi else script_data["title"],
                 script_data["description"], script_data["tags"], topic_title)
+            if style in ("weaponx", "default", "openmontage") and (project_record.get("channel") or "weaponxlabs") != "autoflashx":
+                from agents.youtube_metadata import apply_weapon_hashtags
+                clean_description, clean_tags = apply_weapon_hashtags(clean_description, clean_tags)
             project_record.update({
                 "progress_step": "Verify-video: Finalizing & verifying image and video...",
                 "title": clean_title,
