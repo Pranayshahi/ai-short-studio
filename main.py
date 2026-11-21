@@ -7,6 +7,10 @@ from app.agents.youtube_publisher import YouTubePublisher
 
 def _serve(args):
     import config  # noqa: F401  (loads .env so STUDIO_API_TOKEN is visible)
+    # `kill -USR1 <pid>` writes every thread's Python stack to the log (diagnose a hang without admin rights)
+    import faulthandler
+    import signal
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     if args.host not in ("127.0.0.1", "localhost", "::1") and not os.getenv("STUDIO_API_TOKEN"):
         print("⚠️  [AI Shorts Studio] Binding to", args.host, "WITHOUT a STUDIO_API_TOKEN: anyone on your network can")
         print("    publish, delete and re-authorize YouTube. Set STUDIO_API_TOKEN in .env to require a token.")

@@ -236,6 +236,51 @@ def _run_daily_short(job: Dict[str, Any]) -> Dict[str, Any]:
 
 
 _WORKER_LOCK = __import__("threading").Lock()
+# The job this worker is running right now (for the watchdog)
+_CURRENT: Dict[str, Any] = {}
+JOB_MAX_MINUTES = float(os.getenv("JOB_MAX_MINUTES", "90"))
+
+
+def job_watchdog():
+    """A video normally takes 3-15 minutes. One stuck for JOB_MAX_MINUTES (a 2026-11-20 daily Short hung
+    for 12 h inside image generation and blocked the queue and the nightly music pool) is stopped: all
+    thread stacks go to the log (to find the cause), the job and its project are marked failed, and the
+    process exits so the LaunchAgent restarts a clean worker. Python can't kill a stuck thread, so this
+    restart is the only reliable way out."""
+    import faulthandler
+    import sys as _sys
+    cur = dict(_CURRENT)
+    if not cur:
+        return
+    minutes = (time.time() - cur["started"]) / 60
+    if minutes < JOB_MAX_MINUTES:
+        return
+    print(f"⏱️ [Watchdog] Job {cur['id']} ({cur['kind']}) has run {minutes:.0f} min (limit {JOB_MAX_MINUTES:.0f}). "
+          "Thread stacks follow, then the worker restarts.", flush=True)
+    import threading as _th
+    import traceback as _tb
+    names = {t.ident: t.name for t in _th.enumerate()}
+    for ident, frame in _sys._current_frames().items():
+        print(f"--- Thread {names.get(ident, ident)} ---\n" + "".join(_tb.format_stack(frame)), flush=True)
+    try:
+        faulthandler.dump_traceback(file=_sys.stdout, all_threads=True)  # native view too, when stdout is a file
+    except Exception:
+        pass
+    _sys.stdout.flush()
+    reason = f"Stopped by the watchdog: stuck for over {JOB_MAX_MINUTES:.0f} minutes (see scheduler.log)."
+    try:
+        jobs._modify(cur["id"], lambda j: j.update(status="failed", last_error=reason,
+                                                   finished_at=datetime.now().isoformat(timespec="seconds")))
+        from app.utils.storage import StorageManager
+        pid = cur.get("project_id") or (next((j for j in jobs.all_jobs() if j["id"] == cur["id"]), {}) or {}).get("project_id")
+        proj = StorageManager.get_project_by_id(pid) if pid else None
+        if proj and proj.get("status") in ("in_progress", "queued"):
+            proj.update(status="failed", error=reason, progress_step="Failed: " + reason)
+            StorageManager.save_project(proj)
+        notifier.send(f"⏱️ A video got stuck and was stopped after {minutes:.0f} min: {cur['kind']} {pid or ''}. "
+                      "The worker restarted; other videos continue.", title="Video stopped (stuck)")
+    finally:
+        os._exit(3)  # non-zero: launchd restarts the worker
 
 
 def process_queue():
@@ -253,6 +298,16 @@ def _process_one():
     job = jobs.claim_next()
     if not job:
         return None
+    _CURRENT.clear()
+    _CURRENT.update(id=job["id"], kind=job["kind"], started=time.time(),
+                    project_id=(job.get("params") or {}).get("project_id") or job.get("project_id"))
+    try:
+        return _run_claimed(job)
+    finally:
+        _CURRENT.clear()
+
+
+def _run_claimed(job):
     print(f"▶️ [Scheduler] Running job {job['id']} ({job['kind']}), attempt {job['attempts']}/{job.get('max_attempts')}")
     try:
         if job["kind"] == "daily_short":
@@ -383,6 +438,10 @@ def main():
         return
 
     _lock = _single_instance()
+    # `kill -USR1 <pid>` writes every thread's Python stack to the log (no admin rights needed)
+    import faulthandler
+    import signal as _signal
+    faulthandler.register(_signal.SIGUSR1, all_threads=True)
     resumed = jobs.recover_interrupted(force=True)
     if resumed:
         print(f"[Scheduler] Resuming {len(resumed)} interrupted job(s): {resumed}")
@@ -398,6 +457,7 @@ def main():
     scheduler.add_job(scheduled_car_edit_job, "cron", hour=c_hour, minute=c_min, id="daily_car_enqueue", misfire_grace_time=6 * 3600, coalesce=True)
     # every 10 s: dashboard videos start quickly; still one video at a time (max_instances=1)
     scheduler.add_job(process_queue, "interval", seconds=10, id="worker", max_instances=2, coalesce=True)
+    scheduler.add_job(job_watchdog, "interval", seconds=60, id="job_watchdog", max_instances=1, coalesce=True)
     scheduler.add_job(worker_heartbeat, "interval", seconds=20, id="worker_heartbeat", max_instances=1,
                       coalesce=True, next_run_time=datetime.now(tz))
     scheduler.add_job(poll_approvals, "interval", seconds=20, id="approvals", max_instances=1, coalesce=True)
