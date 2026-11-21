@@ -44,3 +44,73 @@ def test_aircraft_infobox_fields_are_read():
     fb = ec._infobox(wt)
     assert fb.get("national_origin") == "United States"
     assert ec._origin(fb) == "United States" and ec._service_year(fb) == 1986
+
+
+CHATGPT_LIST = """Top 20 Main Battle Tanks in the World – 2026
+Here is a list of 20 of the world's most advanced Main Battle Tanks (MBTs) in 2026.
+
+Note: This is an editorial ranking.
+
+1. Leopard 2A8
+
+Germany 🇩🇪
+
+Latest-generation Leopard with advanced armour.
+
+2. M1A2 Abrams SEPv3
+
+United States 🇺🇸
+
+Powerful 120 mm gun.
+
+3. K2 Black Panther
+South Korea 🇰🇷
+4. Merkava Mk4 Barak
+Israel 🇮🇱
+5. T-90M Proryv
+Russia 🇷🇺
+6. Challenger 3
+United Kingdom 🇬🇧
+"""
+
+
+def test_chatgpt_style_list_is_read():
+    p = rp.parse_ranked_list(CHATGPT_LIST)
+    assert rp.is_ranked_list(CHATGPT_LIST)
+    assert p["title"] == "Top 20 Main Battle Tanks in the World"
+    assert [i["name"] for i in p["items"]][:3] == ["Leopard 2A8", "M1A2 Abrams SEPv3", "K2 Black Panther"]
+    assert p["items"][0]["country"] == "Germany" and p["items"][0]["note"].startswith("Latest-generation")
+
+
+def test_variant_names_fall_back_to_the_base_article():
+    for name, base in [("Leopard 2A8", "Leopard 2"), ("T-72B3M", "T-72"), ("Merkava Mk4 Barak", "Merkava"),
+                       ("Type 99A", "Type 99"), ("T-80BVM", "T-80"), ("T-90M Proryv", "T-90")]:
+        assert base in rp._simplify(name), (name, rp._simplify(name))
+
+
+def test_list_keeps_user_order_and_skips_unverifiable(monkeypatch, tmp_path):
+    arts = {"Leopard 2A8": ("Leopard 2", 1979), "M1A2 Abrams SEPv3": ("M1 Abrams", 1980), "K2 Black Panther": ("K2 Black Panther", 2014),
+            "T-90M Proryv": ("T-90", 1992), "Challenger 3": ("Challenger 3", 2027)}
+
+    def fake_match(name, words, kind):
+        if name not in arts:
+            return None  # 'Merkava Mk4 Barak' can't be verified here
+        t, y = arts[name]
+        return {"title": t, "type": "Main battle tank", "origin": "X", "year": y, "image_url": "x", "specs": {}}
+    monkeypatch.setattr(rp, "match_article", fake_match)
+    monkeypatch.setattr(rp, "render", lambda chart, resolved, out, cache: {"path": str(out), "rows": len(resolved), "photos": 0})
+    monkeypatch.setattr(rp.ev, "photo_credits", lambda x: [])
+    monkeypatch.setattr(rp.time, "sleep", lambda s: None)
+    r = rp.make_poster(CHATGPT_LIST, tmp_path / "c.png", tmp_path)
+    assert [i["name"] for i in r["items"]] == ["Leopard 2A8", "M1A2 Abrams SEPv3", "K2 Black Panther", "T-90M Proryv", "Challenger 3"]
+    assert r["items"][0]["year"] == "" and r["items"][2]["year"] == "2014", "base-model year never shown for a variant"
+    assert any("Merkava" in s for s in r["skipped"])
+    r2 = rp.make_poster(CHATGPT_LIST + "7. Type 10\nJapan\n", tmp_path / "c.png", tmp_path, exclude=["M1 Abrams"])
+    assert "M1A2 Abrams SEPv3" not in [i["name"] for i in r2.get("items", [])]
+
+
+def test_family_key_and_top_n():
+    assert t.family_key("Leopard 2E") == t.family_key("Leopard 2A4M CAN") == t.family_key("Leopard 2")
+    assert t.family_key("Challenger 2") != t.family_key("Challenger 3")
+    assert t.family_key("Type 99 tank") == t.family_key("Type 99A")
+    assert t.top_n("Top 10 Main Battle Tanks") == 10 and t.top_n("Modern tanks") is None

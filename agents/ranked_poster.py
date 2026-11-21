@@ -30,9 +30,13 @@ W, H = 1080, 1920
 
 def is_ranked_list(text: str) -> bool:
     """A numbered list of items carrying spec lines ('Main armament', 'In service', ...)."""
-    items = re.findall(r"(?m)^\s*\d{1,2}\.\s+\S", text or "")
+    items = re.findall(r"(?m)^\s*\d{1,2}\.\s+(.+)$", text or "")
     specs = len(re.findall(r"(?im)^\s*-?\s*(main armament|armament|in service|infantry capacity|calibre|caliber|crew)\s*:", text or ""))
-    return len(items) >= 5 and specs >= len(items)
+    if len(items) < 5:
+        return False
+    # a plain ranked list of model names ('1. Leopard 2A8' / 'Germany 🇩🇪' / one-line note), e.g. from ChatGPT
+    short = sum(1 for it in items if len(it.strip()) <= 40)
+    return specs >= len(items) or short >= 0.8 * len(items)
 
 
 def parse_ranked_list(text: str) -> Dict[str, Any]:
@@ -55,7 +59,9 @@ def parse_ranked_list(text: str) -> Dict[str, Any]:
         if kv:
             cur["specs"][kv.group(1).strip().lower()] = kv.group(2).strip()
         elif not cur["country"] and not s.startswith("-") and len(s) < 40 and not re.search(r"\+\d|database|defen[cs]e and", s, re.I):
-            cur["country"] = s
+            cur["country"] = re.sub(r"[\U0001F1E6-\U0001F1FF\uFFFD]+", "", s).strip(" /-")  # 'Germany 🇩🇪' -> 'Germany'
+        elif "note" not in cur and not s.startswith("-") and not kv:
+            cur["note"] = s[:140]  # the list's one-line description of the model
     for it in items:
         svc = it["specs"].get("in service", "")
         y = re.search(r"\b(19|20)\d{2}s?\b", svc)
@@ -73,6 +79,16 @@ def _simplify(name: str) -> List[str]:
     out.append(n)
     out.append(re.sub(r"\b([A-Z]+\d+)A\d\b", r"\1", n))       # M2A4 -> M2
     out.append(re.sub(r"\b([A-Z]+-\d+)[A-Z]\b", r"\1", n))     # ZBD-04A -> ZBD-04
+    # newer variants whose Wikipedia article is the base model (2026 lists name the latest variant)
+    v = re.sub(r"\s+Mk\.?\s*\d+\w*.*$", "", name, flags=re.I).strip()          # Merkava Mk4 Barak -> Merkava
+    v = re.sub(r"\b(\d+)A\d+\w*\b", r"\1", v)                                 # Leopard 2A8 -> Leopard 2
+    v = re.sub(r"\b([A-Z]{1,3}-\d+)[A-Z][A-Z0-9]*\b", r"\1", v)                # T-72B3M / T-80BVM -> T-72 / T-80
+    v = re.sub(r"\b(Type \d+)[A-Z]\b", r"\1", v)                               # Type 99A -> Type 99
+    v = re.sub(r"\s+(SEP\w*|XLR|Mk\w*|[IVX]+)$", "", v).strip()                # Leclerc XLR, Al-Khalid I
+    out.append(v)
+    first = re.match(r"^(\S+(?:\s\d+)?)", v)                                      # T-90M Proryv -> T-90
+    if first and first.group(1) != v:
+        out.append(first.group(1))
     return [x for x in dict.fromkeys(o.strip() for o in out) if x]
 
 
@@ -114,7 +130,14 @@ def match_article(name: str, category_words: str = "fighting vehicle", kind: str
             base = re.sub(r"\s*\([^)]*\)\s*$", "", t).strip().lower()
             exact = base == q.lower()  # article titled exactly as the model ('CZ 75': no designator, no 3-letter word)
             named = exact or (mentions_any(text, desigs) if desigs else bool(words) and words[0].lower() in t.lower())
-            kind_ok = re.search(KINDS.get(kind, KINDS["vehicle"])["kind_re"], f"{m.get('type', '')} {m.get('lead', '')}", re.I)
+            kre = KINDS.get(kind, KINDS["vehicle"])["kind_re"]
+            if (m.get("type") or "").strip():
+                kind_ok = re.search(kre, m["type"], re.I)
+            else:  # no infobox type: the opening sentence must SAY it is one ("... is a main battle tank")
+                kind_ok = re.search(rf"\b(?:is|was) an?\s+(?:[\w-]+\s+){{0,6}}?(?:{kre})", m.get("lead", ""), re.I) \
+                    and not re.search(r"\b(?:is|was) an?\s+(?:[\w'-]+\s+){0,4}?(?:sight|fire[- ]control|radar|engine|system for|turret)", m.get("lead", ""), re.I)
+            if kind == "vehicle" and re.search(r"anti-?\s?tank|anti-?\s?armou?r", m.get("type") or "", re.I):
+                kind_ok = None
             if not (named and kind_ok):
                 continue
             score = 3 if exact else (2 if (mentions_any(t, desigs) if desigs else bool(words) and words[0].lower() in t.lower()) else 1)
@@ -259,8 +282,70 @@ def make_poster_from_items(title: str, rows: List[Dict[str, Any]], out_path: Pat
     return _build({"title": title, "full_title": title, "items": items}, out_path, cache_dir, kind)
 
 
-def make_poster(text: str, out_path: Path, cache_dir: Path) -> Dict[str, Any]:
-    return _build(parse_ranked_list(text), out_path, cache_dir, "vehicle")
+MAX_LIST_ROWS = 10  # 1080x1920: more rows than this are unreadable on a phone
+
+
+def _norm(n: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", re.sub(r"\s*\([^)]*\)\s*$", "", n or "").lower().replace(" tank", ""))
+
+
+def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[List[str]] = None) -> Dict[str, Any]:
+    """The user's own ranked list (e.g. pasted from ChatGPT), in THEIR order with THEIR names. Every row is
+    verified on Wikipedia (right kind of system, real photo, country); a name that can't be verified is
+    skipped and reported, and the next list entries fill the chart (up to MAX_LIST_ROWS)."""
+    parsed = parse_ranked_list(text)
+    if any(it["specs"] for it in parsed["items"]):
+        return _build(parsed, out_path, cache_dir, "vehicle")  # the original spec-sheet format (IFV lists)
+    from agents import topic_weapon_list as twl
+    title = parsed["title"] or "Ranked list"
+    kind = twl.kind_for(title)
+    sub = twl.subtype_for(title)
+    words = (sub[2][0] if sub and sub[2] else KINDS.get(kind, KINDS["vehicle"])["words"])
+    excluded = {_norm(x) for x in exclude or []}
+    resolved, skipped, used = [], [], set()
+    for it in parsed["items"]:
+        if len(resolved) >= MAX_LIST_ROWS:
+            break
+        if _norm(it["name"]) in excluded:
+            continue
+        m = match_article(it["name"], words, kind)
+        if m is None:
+            skipped.append(f"{it['name']}: no Wikipedia article with a photo found")
+            continue
+        if not twl._is_kind({**m, "origin": m.get("origin") or it.get("country") or "x"}, kind,
+                            KINDS.get(kind, KINDS["vehicle"])["kind_re"], sub):
+            skipped.append(f"{it['name']}: Wikipedia says '{m['title']}' is a {(m.get('type') or 'different system')[:40]}")
+            continue
+        if m["title"] in used or _norm(m["title"]) in excluded:
+            skipped.append(f"{it['name']}: same article as another row ({m['title']})")
+            continue
+        used.add(m["title"])
+        m["_kind"] = kind
+        same_model = _norm(it["name"]) == _norm(m["title"])
+        b1, b2 = twl._bullets(m)
+        row = {"rank": len(resolved) + 1, "name": it["name"],
+               "country": it.get("country") or (ec._country(m["origin"]) if m.get("origin") else ""),
+               # the article's service year is the BASE model's: only shown when the row IS that model
+               "year": str(m.get("year") or "") if same_model else "",
+               "lookup": m["title"], "specs": {"_bullets": [b1, b2]}, "note": it.get("note", "")}
+        resolved.append((row, m))
+        time.sleep(0.3)
+    if len(resolved) < 5:
+        return {"error": f"Only {len(resolved)} of the listed models could be verified on Wikipedia (need 5). "
+                         f"Not verified: {'; '.join(skipped)[:400]}", "skipped": skipped}
+    chart = {"title": title.upper(), "full_title": parsed["full_title"], "items": [r for r, _ in resolved], "kind": kind}
+    res = render(chart, resolved, out_path, cache_dir)
+    if res.get("error"):
+        return res
+    credits, seen = [], set()
+    for c in ev.photo_credits([{"historical": m, "modern": m} for _, m in resolved]):
+        if c["file"] not in seen:
+            seen.add(c["file"])
+            credits.append(c)
+    return {**res, "title": title, "kind": kind, "skipped": skipped, "credits": credits, "items": [
+        {"rank": r["rank"], "name": r["name"], "country": r["country"], "year": r["year"], "article": m["title"],
+         "photo": m.get("image_file_used") or m.get("image_file"), "note": r["note"],
+         "bullets": [b for b in r["specs"]["_bullets"] if b]} for r, m in resolved]}
 
 
 def _build(parsed: Dict[str, Any], out_path: Path, cache_dir: Path, kind: str) -> Dict[str, Any]:

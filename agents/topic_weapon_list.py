@@ -11,6 +11,7 @@ photo; facts (year, origin, type) come from the article's infobox, never from th
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # topic pattern -> chart kind (see ranked_poster.KINDS)
@@ -49,7 +50,8 @@ def _llm_names(topic: str, n: int = 16) -> List[str]:
                 return []
             try:
                 data = script_writer._ollama(
-                    f"List {n} specific, real, well-known military systems that belong in a chart titled '{topic}'. "
+                    f"List the {n} most important, best-known military systems that belong in a chart titled '{topic}', "
+                    "most capable first (current front-line systems for 'modern' or a year). "
                     "Use the exact model names as Wikipedia titles them (e.g. 'Mark 48 torpedo', 'UGM-133 Trident II', "
                     "'3M-54 Kalibr'). Only real systems in service or recently retired; no categories, no prototypes.",
                     NAMES_SCHEMA, timeout=120)
@@ -74,6 +76,25 @@ KIND_QUERIES = {
 }
 
 
+def _list_article_links(query: str, limit: int = 300) -> List[str]:
+    """Model titles linked from Wikipedia's own list article ('List of main battle tanks by generation'):
+    a complete candidate pool (plain searches missed K2 Black Panther and Leclerc)."""
+    from agents import equipment_catalog as ec
+    data = ec._get({"action": "query", "list": "search", "srsearch": f"intitle:list {query}", "srlimit": 3}) or {}
+    lists = [h["title"] for h in data.get("query", {}).get("search", []) if h["title"].lower().startswith("list of")][:2]
+    out: List[str] = []
+    for lt in lists:
+        cont: Dict[str, Any] = {}
+        for _page in range(4):
+            d = ec._get({"action": "query", "titles": lt, "prop": "links", "plnamespace": 0, "pllimit": "max", **cont}) or {}
+            for pg in d.get("query", {}).get("pages", []):
+                out += [l["title"] for l in pg.get("links", []) if l["title"] not in out]
+            cont = d.get("continue") or {}
+            if not cont or len(out) >= limit:
+                break
+    return [t for t in out if not t.lower().startswith(("list of", "category:"))][:limit]
+
+
 def _search_titles(topic: str, kind: str = "") -> List[str]:
     from agents import equipment_catalog as ec
     core = re.sub(r"\b(modern|systems?|the|top|best|most|powerful|world'?s?|of|weapons?)\b", " ", topic, flags=re.I)
@@ -87,7 +108,11 @@ def _search_titles(topic: str, kind: str = "") -> List[str]:
         for h in (data or {}).get("query", {}).get("search", []):
             if h["title"] not in titles and not h["title"].lower().startswith(("list of", "category:")):
                 titles.append(h["title"])
-    return titles[:60]
+    titles = titles[:60]
+    if sub:  # a specific system type: Wikipedia's list articles give the complete pool
+        for q in sub[2][:1]:
+            titles += [t for t in _list_article_links(q) if t not in titles]
+    return titles
 
 
 def _clean_type(raw: str) -> str:
@@ -105,8 +130,21 @@ _BULLET_ORDER = ["Range", "Speed", "Warhead", "No. built", "Cartridge", "Calibre
 def _bullets(m: Dict[str, Any]) -> Tuple[str, str]:
     """Two real specs from the article's infobox, like the reference chart ('Cartridge - 7.62x39 mm',
     'No. built - 75 million'); type / service year only when the article has no usable specs."""
-    specs = m.get("specs") or {}
-    picks = [f"{k} - {specs[k]}" for k in _BULLET_ORDER if specs.get(k)][:2]
+    specs = dict(m.get("specs") or {})
+    order = _BULLET_ORDER
+    if m.get("_kind") == "vehicle":
+        # tanks/IFVs are compared by their gun and weight (like '120 mm gun' in editorial lists)
+        if m.get("calibre_mm"):
+            specs["Main gun"] = f"{m['calibre_mm']:g} mm"
+        if m.get("weight_t") and not specs.get("Weight"):
+            specs["Weight"] = f"{m['weight_t']:g} t"
+        order = ["Main gun", "Weight", "Speed", "Range", "No. built"]
+        rng = re.search(r"([\d,.]+)\s*km\b", specs.get("Range", ""))
+        if rng and float(rng.group(1).replace(",", "")) < 100:
+            specs.pop("Range")  # 'Range - 5 km' is a gun/missile range, not the tank's driving range
+        if specs.get("Weight"):
+            specs["Weight"] = re.sub(r"\s*(?:tonnes?|metric tons?)\b", " t", specs["Weight"])
+    picks = [f"{k} - {specs[k]}" for k in order if specs.get(k)][:2]
     if len(picks) < 2:
         typ = _clean_type(m.get("type") or "")
         if len(typ) > 34:
@@ -196,6 +234,61 @@ def _is_kind(m: Dict[str, Any], kind: str, kind_re: str, sub: Optional[Tuple[str
     return True
 
 
+def family_key(title: str) -> str:
+    """'Leopard 2E' / 'Leopard 2A4M CAN' / 'Leopard 2' -> 'leopard2'; 'Type 99 tank' -> 'type99';
+    'T-90M' -> 't90'; 'M1 Abrams' -> 'm1'. One chart row per family (variants crowded out famous models)."""
+    t = re.sub(r"\s*\([^)]*\)", "", title or "").lower()
+    m = re.search(r"((?:type\s+)?[a-z]+(?:-[a-z]+)*[\s-]?\d+)", t)
+    return re.sub(r"[^a-z0-9]", "", m.group(1) if m else t.split(" ")[0])
+
+
+def pageviews(titles: List[str], days: int = 90) -> Dict[str, int]:
+    """English-Wikipedia views over the last ~3 months per article: how well-known/important a system is
+    right now (what editorial 'top' lists rank by). Cached a week; 0 when unknown."""
+    import json
+    import time as _t
+    import urllib.parse
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date, timedelta
+    import config
+    import requests
+    from agents import equipment_catalog as ec
+    cf = Path(config.OUTPUT_DIR) / "cache" / "pageviews.json"
+    try:
+        cache = json.loads(cf.read_text(encoding="utf-8"))
+    except Exception:
+        cache = {}
+    end = date.today().replace(day=1) - timedelta(days=1)
+    start = (end - timedelta(days=days)).replace(day=1)
+
+    def one(title: str) -> int:
+        hit = cache.get(title)
+        if hit and _t.time() - hit[1] < 7 * 86400:
+            return hit[0]
+        url = ("https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/user/"
+               f"{urllib.parse.quote(title.replace(' ', '_'), safe='')}/monthly/{start:%Y%m%d}00/{end:%Y%m%d}00")
+        try:
+            r = requests.get(url, headers=ec.HEADERS, timeout=15)
+            views = sum(i.get("views", 0) for i in r.json().get("items", [])) if r.status_code == 200 else 0
+        except Exception:
+            return 0
+        cache[title] = [views, _t.time()]
+        return views
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        out = dict(zip(titles, pool.map(one, titles)))
+    try:
+        cf.parent.mkdir(parents=True, exist_ok=True)
+        cf.write_text(json.dumps(cache), encoding="utf-8")
+    except Exception:
+        pass
+    return out
+
+
+def top_n(topic: str) -> Optional[int]:
+    m = re.search(r"\btop\s+(\d{1,2})\b", topic or "", re.I)
+    return int(m.group(1)) if m else None
+
+
 SIDE_PROFILE_KINDS = ("missile", "naval")
 MIN_ELONGATION = 4.0  # measured: clean missiles/torpedoes 5-10; launcher tripods, pylons, trucks, crews 1.4-3.9
 
@@ -259,6 +352,10 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
     from agents import equipment_catalog as ec
     from agents import ranked_poster as rp
     kind = kind_for(topic)
+    n = top_n(topic)
+    if n:  # "Top 10 ..." -> 10 rows (a 1080x1920 chart holds at most 10 readable rows)
+        max_rows = max(min_rows, min(n, rp.MAX_LIST_ROWS))
+        min_rows = min(min_rows, max_rows)
     spec = rp.KINDS.get(kind, rp.KINDS["missile"])
     kind_re, words = spec["kind_re"], spec["words"]
     sub = subtype_for(topic)
@@ -284,10 +381,10 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
         if m and _is_kind(m, kind, kind_re, sub):
             verified.setdefault(m["title"], m)
 
-    if len(verified) < max_rows + 6:
+    if len(verified) < max_rows + 6 or sub:  # a specific type: always rank the full pool, not the first hits
         titles = [t for t in _search_titles(topic, kind) if t not in verified]
         for m in (ec.fetch_models(titles) if titles else {}).values():
-            if len(verified) >= max_rows + 10:
+            if len(verified) >= 250:
                 break
             if _is_kind(m, kind, kind_re, sub):
                 verified.setdefault(m["title"], m)
@@ -296,12 +393,33 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
     verified = {t: m for t, m in verified.items() if m.get("origin") and t.lower() not in excluded
                 and str(m.get("requested_as", "")).lower() not in excluded}
     kept = [verified[t] for t in (keep_titles or []) if t in verified]
-    models = kept + [m for m in verified.values() if m not in kept]
-    if modern and not keep_titles:
-        # "Modern ...": newest systems first; WW2/early Cold War designs only if nothing newer exists
-        models.sort(key=lambda m: -(m.get("year") or 0))
-        recent = [m for m in models if (m.get("year") or 0) >= 1975]
-        models = recent + [m for m in models if m not in recent] if len(recent) < min_rows else recent
+    # Rank like an editorial "top" list: the best-known, most important systems first (Wikipedia
+    # readership), one row per family (Leopard 2E / 2A4M CAN were listed instead of Abrams, K2, Merkava)
+    views = pageviews([t for t in verified if t not in (keep_titles or [])])
+    best: Dict[str, Dict[str, Any]] = {}
+    for t, m in verified.items():
+        if m in kept:
+            continue
+        m["_views"] = views.get(t, 0)
+        fk = family_key(t)
+        if fk in {family_key(k["title"]) for k in kept}:
+            continue
+        if fk not in best or m["_views"] > best[fk]["_views"]:
+            best[fk] = m
+    rest = sorted(best.values(), key=lambda m: (-m["_views"], -(m.get("year") or 0)))  # equal fame: newer first
+    if (modern or re.search(r"\b20[2-3]\d\b", topic)) and not keep_titles:
+        # "Modern ..." / "... 2026": systems from 1980 on; older designs only if nothing newer exists
+        # front-line = in service today (Leopard 2 / Merkava entered service in 1979 and still lead),
+        # or introduced from 1980 on; retired designs only if nothing else exists
+        def current(m):
+            st = str(m.get("status") or "").lower()
+            if re.search(r"retired|out of service|withdrawn|museum|cancel", st):
+                return False
+            # many infoboxes have no status: entered service from 1975 on = current generation
+            return "in service" in st or "active" in st or (m.get("year") or 0) >= 1975
+        recent = [m for m in rest if current(m)]
+        rest = recent if len(recent) >= min_rows else recent + [m for m in rest if m not in recent]
+    models = kept + rest
     # cancelled prototypes / category pages have no service year: only when there aren't enough real models
     dated = [m for m in models if m.get("year")]
     if len(dated) >= min_rows + 2:

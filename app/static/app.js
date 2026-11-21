@@ -1955,8 +1955,19 @@ async function loadAbKit() {
 // ---- WeaponX chart preview: build the chart, drop rows, then make the video with it -------------
 let chartPreviewState = null;
 
-async function openChartPreview(exclude = null) {
-  const topic = (document.getElementById('customTopicInput')?.value || '').trim() || (chartPreviewState && chartPreviewState.topic);
+function chartListForm(prefill = '') {
+  return `
+    <details ${prefill ? 'open' : ''} style="margin-top:12px;">
+      <summary style="cursor:pointer; color:#facc15; font-weight:700;">📋 Use my own ranked list (e.g. from ChatGPT)</summary>
+      <div style="font-size:11.5px; color:#94a3b8; margin:6px 0;">Paste a numbered list (title line, then "1. Leopard 2A8", country, note…). Your order and names are kept; each model is verified on Wikipedia (right type, real photo, country). Up to 10 rows; names that can't be verified are skipped and the next ones fill in.</div>
+      <textarea id="chartListInput" rows="9" style="width:100%; box-sizing:border-box; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:8px; padding:8px; font-size:12px;" placeholder="Top 10 Main Battle Tanks in the World – 2026&#10;1. Leopard 2A8&#10;Germany&#10;2. M1A2 Abrams SEPv3&#10;United States&#10;...">${escapeHtml(prefill)}</textarea>
+      <button class="btn btn-secondary" style="margin-top:6px;" onclick="openChartPreview(null, (document.getElementById('chartListInput')?.value || '').trim() || null)">✅ Build chart from my list</button>
+    </details>`;
+}
+
+async function openChartPreview(exclude = null, rankedList = null) {
+  const typed = (document.getElementById('customTopicInput')?.value || '').trim();
+  const topic = typed || (chartPreviewState && chartPreviewState.topic) || '';
   let modal = document.getElementById('chartPreviewModal');
   if (!modal) {
     modal = document.createElement('div');
@@ -1965,41 +1976,55 @@ async function openChartPreview(exclude = null) {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
     document.body.appendChild(modal);
   }
-  if (!topic) {
-    modal.innerHTML = `<div class="fb-modal">Type a WeaponX topic first (e.g. "Cruise Missiles", "Modern Torpedoes"). <button class="fb-del" onclick="document.getElementById('chartPreviewModal').remove()">✕</button></div>`;
+  if (!topic && !rankedList && !exclude) {
+    modal.innerHTML = `<div class="fb-modal" style="width:min(640px,100%);" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between;"><strong>👁 Chart preview</strong><button class="fb-del" onclick="document.getElementById('chartPreviewModal').remove()">✕</button></div>
+      <div style="color:#94a3b8; margin-top:6px;">Type a WeaponX topic in the topic box (e.g. "Top 10 Main Battle Tanks 2026") or paste your own list below.</div>
+      ${chartListForm()}</div>`;
     return;
   }
-  modal.innerHTML = `<div class="fb-modal"><div style="color:#94a3b8;">⏳ Building a verified chart for "${escapeHtml(topic)}" (checking every photo; up to a few minutes)…</div></div>`;
+  modal.innerHTML = `<div class="fb-modal"><div style="color:#94a3b8;">⏳ Building a verified chart${rankedList ? ' from your list' : ` for "${escapeHtml(topic)}"`} (checking every model and photo; up to a few minutes)…</div></div>`;
   const body = { topic };
+  if (rankedList) { body.ranked_list = rankedList; }
   if (exclude && chartPreviewState) { body.preview_id = chartPreviewState.preview_id; body.exclude = [exclude]; }
   const res = await fetch('/api/chart-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const d = await res.json().catch(() => ({}));
   if (!res.ok) {
-    modal.innerHTML = `<div class="fb-modal">⚠️ ${escapeHtml(typeof d.detail === 'string' ? d.detail : 'Could not build the chart')} <button class="fb-del" onclick="document.getElementById('chartPreviewModal').remove()">✕</button></div>`;
+    modal.innerHTML = `<div class="fb-modal" style="width:min(640px,100%);" onclick="event.stopPropagation()">⚠️ ${escapeHtml(typeof d.detail === 'string' ? d.detail : 'Could not build the chart')} <button class="fb-del" onclick="document.getElementById('chartPreviewModal').remove()">✕</button>${chartListForm(rankedList || '')}</div>`;
     return;
   }
   chartPreviewState = d;
   const rows = (d.rows || []).map(r => `
     <div class="fb-item" style="display:flex; justify-content:space-between; align-items:center;">
       <div><strong>${escapeHtml(r.name || '')}</strong> <span style="color:#94a3b8;">${escapeHtml(r.country || '')} ${escapeHtml(String(r.year || ''))}</span>
+        ${r.article && r.article !== r.name ? `<span style="font-size:11px; color:#64748b;"> · Wikipedia: ${escapeHtml(r.article)}</span>` : ''}
         <div style="font-size:11px; color:#cbd5e1;">${escapeHtml((r.bullets || []).join(' · '))}</div></div>
-      <button class="btn btn-secondary btn-xs" title="Replace this row with another verified weapon" onclick='openChartPreview(${JSON.stringify(r.article || r.name)})'>✕ Replace</button>
+      <button class="btn btn-secondary btn-xs" title="${d.from_list ? 'Drop this row; the next model in your list moves up' : 'Replace this row with another verified weapon'}" onclick='openChartPreview(${JSON.stringify(r.article || r.name)})'>✕ ${d.from_list ? 'Drop' : 'Replace'}</button>
     </div>`).join('');
+  const skipped = (d.skipped || []).length ? `<div style="font-size:11.5px; color:#fbbf24; margin:6px 0;">Not verified, skipped: ${escapeHtml(d.skipped.join(' · '))}</div>` : '';
   modal.innerHTML = `
     <div class="fb-modal" style="width:min(960px,100%);" onclick="event.stopPropagation()">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <strong style="font-size:15px;">👁 Chart preview · ${escapeHtml(d.topic)}</strong>
+        <strong style="font-size:15px;">👁 Chart preview · ${escapeHtml(d.topic)}${d.from_list ? ' · your list' : ''}</strong>
         <button class="fb-del" onclick="document.getElementById('chartPreviewModal').remove()">✕</button>
       </div>
       <div style="display:flex; gap:14px; flex-wrap:wrap;">
         <img src="${d.image_url}?t=${Date.now()}" style="width:300px; max-width:100%; border-radius:8px; background:#fff;">
         <div style="flex:1; min-width:260px;">
-          <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">Every row is a Wikipedia-verified model with a checked photo. Replace any row you don't like; the other rows stay.</div>
-          ${rows}
-          <button class="btn btn-primary" style="margin-top:10px;" onclick="document.getElementById('chartPreviewModal').remove(); triggerGenerate('weaponx', '${d.preview_id}')">🔥 Create WeaponX video with this chart</button>
+          <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">${d.from_list ? 'Your order and names; every row verified on Wikipedia (type, photo, country).' : 'Ranked by importance (Wikipedia readership), one row per model family; every row verified with a checked photo.'}</div>
+          ${skipped}${rows}
+          <button class="btn btn-primary" style="margin-top:10px;" onclick="chartPreviewCreate()">🔥 Create WeaponX video with this chart</button>
+          ${d.from_list ? '' : chartListForm()}
         </div>
       </div>
     </div>`;
+}
+
+function chartPreviewCreate() {
+  const input = document.getElementById('customTopicInput');
+  if (input && !input.value.trim() && chartPreviewState) input.value = chartPreviewState.topic;  // the list's title
+  document.getElementById('chartPreviewModal')?.remove();
+  triggerGenerate('weaponx', chartPreviewState.preview_id);
 }
 
 // ---- Performance: YouTube stats per video, and what works by style / music theme / channel -----

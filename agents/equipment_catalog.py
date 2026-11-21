@@ -248,6 +248,7 @@ def fetch_models(titles: List[str], thumb: int = 640) -> Dict[str, Dict[str, Any
                 "calibre_mm": _calibre_mm(fb),
                 "weight_t": _weight_t(fb),
                 "type": _clean(fb.get("type", "") or fb.get("aircraft_type", "")),  # aircraft: aircraft_type
+                "status": status[:60],
                 "lead": lead[:300],
                 "article_length": pg.get("length", 0),
                 "is_prototype": (year is None) or any(w in status for w in ("prototype", "cancel", "development")),

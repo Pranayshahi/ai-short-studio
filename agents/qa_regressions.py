@@ -595,6 +595,7 @@ class QARegressionChecksMixin:
             with mock.patch.object(tl, "_llm_names", lambda topic, n=16: list(arts)), \
                  mock.patch("agents.equipment_catalog.fetch_models", lambda titles, thumb=640: {t: dict(arts[t], requested_as=t) for t in titles if t in arts}), \
                  mock.patch.object(tl, "_search_titles", lambda topic, kind="": []), \
+                 mock.patch.object(tl, "pageviews", lambda titles, days=90: {}), \
                  mock.patch.object(tl, "_with_clean_photos", lambda models, kind, max_rows: [m for m in models if m["title"] != "T7"][:max_rows]):
                 spec = tl.build_rows("Modern Submarine Weapon Systems")
             names = [r["name"] for r in spec.get("rows", [])]
