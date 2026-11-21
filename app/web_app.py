@@ -224,6 +224,8 @@ class GenerateRequest(BaseModel):
     clip_engine: Optional[str] = "auto"
     # WeaponX: a chart approved in the dashboard preview (POST /api/chart-preview) is used as-is
     chart_preview_id: Optional[str] = None
+    # Car "New Launch": photos/clips uploaded beforehand (POST /api/new-launch/upload) build the whole video
+    new_launch_upload_id: Optional[str] = None
 
 class PublishRequest(BaseModel):
     override_qa: bool = False  # 'Approve anyway' after seeing the failed quality checks
@@ -560,6 +562,16 @@ def _start_generation(req, audio_mode, with_voice, with_music, duration, backgro
 
     if req.chart_preview_id:
         project_record["chart_preview_id"] = req.chart_preview_id
+        StorageManager.save_project(project_record)
+
+    if req.new_launch_upload_id:
+        from agents import new_launch
+        media = new_launch.resolve_upload(req.new_launch_upload_id)
+        if not media:
+            project_record.update(status="failed", error="New Launch: the uploaded photos/clips were not found")
+            StorageManager.save_project(project_record)
+            raise HTTPException(status_code=400, detail="New Launch upload not found; upload the photos/clips again")
+        project_record.update(user_media=media, new_launch=True, new_launch_upload_id=req.new_launch_upload_id)
         StorageManager.save_project(project_record)
 
     if getattr(req, "animate_all_scenes", False):
@@ -2152,8 +2164,8 @@ class CarQueueRefillRequest(BaseModel):
 # ------------------------------------------------------------------------------------------------
 from app.routes import agents as _routes_agents, car_queue as _routes_car_queue, music as _routes_music, \
     settings as _routes_settings, photo_library as _routes_photo_library, analytics as _routes_analytics, \
-    chart_preview as _routes_chart_preview, ab_variants as _routes_ab_variants  # noqa: E402
+    chart_preview as _routes_chart_preview, ab_variants as _routes_ab_variants, new_launch as _routes_new_launch  # noqa: E402
 
 for _r in (_routes_music, _routes_car_queue, _routes_agents, _routes_settings, _routes_photo_library, _routes_analytics,
-           _routes_chart_preview, _routes_ab_variants):
+           _routes_chart_preview, _routes_ab_variants, _routes_new_launch):
     app.include_router(_r.router)

@@ -7279,3 +7279,117 @@ async function saveSceneEffects(andRerender) {
     } catch (e) { /* server restarting; try again next tick */ }
   }, 20000);
 })();
+
+
+// ------------------------------------------------------------------ 🚀 New Launch (user photos & clips)
+const newLaunchFiles = { photo: [], clip: [] };
+
+function openNewLaunchModal() {
+  const m = document.getElementById('newLaunchModal');
+  const main = document.getElementById('carMotionNameInput');
+  const nm = document.getElementById('nlCarName');
+  if (nm && main && main.value.trim() && !nm.value.trim()) nm.value = main.value.trim();
+  if (m) m.classList.remove('hidden');
+  // drag & drop onto either box
+  document.querySelectorAll('#newLaunchModal .nl-drop').forEach((box) => {
+    if (box.dataset.bound) return;
+    box.dataset.bound = '1';
+    box.addEventListener('dragover', (e) => { e.preventDefault(); box.style.background = 'rgba(255,255,255,.05)'; });
+    box.addEventListener('dragleave', () => { box.style.background = ''; });
+    box.addEventListener('drop', (e) => {
+      e.preventDefault(); box.style.background = '';
+      newLaunchAddFiles(e.dataTransfer.files, box.htmlFor === 'nlClips' ? 'clip' : 'photo');
+    });
+  });
+}
+
+function closeNewLaunchModal() {
+  const m = document.getElementById('newLaunchModal');
+  if (m) m.classList.add('hidden');
+}
+
+function newLaunchAddFiles(fileList, kind) {
+  const isClip = kind === 'clip';
+  for (const f of Array.from(fileList || [])) {
+    const okType = isClip ? f.type.startsWith('video/') || /\.(mp4|mov|m4v|webm|mkv)$/i.test(f.name)
+                          : f.type.startsWith('image/') || /\.(jpe?g|png|webp)$/i.test(f.name);
+    if (!okType) continue;
+    if (newLaunchFiles[kind].some((x) => x.name === f.name && x.size === f.size)) continue;  // same file twice
+    newLaunchFiles[kind].push(f);
+  }
+  newLaunchFiles.photo = newLaunchFiles.photo.slice(0, 20);
+  newLaunchFiles.clip = newLaunchFiles.clip.slice(0, 10);
+  renderNewLaunchLists();
+}
+
+function renderNewLaunchLists() {
+  const draw = (kind, boxId) => {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+    box.innerHTML = '';
+    newLaunchFiles[kind].forEach((f, i) => {
+      const cell = document.createElement('div');
+      cell.style.cssText = 'position:relative;width:86px;height:120px;border-radius:8px;overflow:hidden;background:#0f172a;border:1px solid #334155';
+      const url = URL.createObjectURL(f);
+      const media = document.createElement(kind === 'clip' ? 'video' : 'img');
+      media.src = url;
+      media.style.cssText = 'width:100%;height:100%;object-fit:cover';
+      if (kind === 'clip') { media.muted = true; media.preload = 'metadata'; }
+      const x = document.createElement('button');
+      x.type = 'button'; x.textContent = '×'; x.title = 'Remove';
+      x.style.cssText = 'position:absolute;top:2px;right:2px;background:rgba(0,0,0,.7);color:#fff;border:0;border-radius:50%;width:22px;height:22px;cursor:pointer';
+      x.onclick = () => { newLaunchFiles[kind].splice(i, 1); renderNewLaunchLists(); };
+      cell.appendChild(media); cell.appendChild(x);
+      box.appendChild(cell);
+    });
+  };
+  draw('photo', 'nlPhotoList');
+  draw('clip', 'nlClipList');
+  const st = document.getElementById('nlStatus');
+  if (st) st.textContent = `${newLaunchFiles.photo.length} photo(s), ${newLaunchFiles.clip.length} clip(s) selected.`;
+}
+
+async function createNewLaunchVideo() {
+  const name = (document.getElementById('nlCarName')?.value || '').trim();
+  const title = (document.getElementById('nlTitle')?.value || '').trim();
+  const duration = parseFloat(document.getElementById('nlDuration')?.value || '30');
+  const st = document.getElementById('nlStatus');
+  const btn = document.getElementById('btnNewLaunchCreate');
+  if (!name) { if (st) st.textContent = '⚠️ Enter the car name.'; return; }
+  if (!newLaunchFiles.photo.length && !newLaunchFiles.clip.length) { if (st) st.textContent = '⚠️ Add at least one photo or clip.'; return; }
+  if (btn) btn.disabled = true;
+  try {
+    if (st) st.textContent = '⏫ Uploading & checking your photos/clips...';
+    const fd = new FormData();
+    [...newLaunchFiles.photo, ...newLaunchFiles.clip].forEach((f) => fd.append('files', f, f.name));
+    const up = await fetch('/api/new-launch/upload', { method: 'POST', body: fd });
+    const upData = await up.json().catch(() => ({}));
+    if (!up.ok) throw new Error(upData.detail || `upload failed (${up.status})`);
+    const skipped = (upData.rejected || []).length ? ` Skipped: ${upData.rejected.join('; ')}` : '';
+    if (st) st.textContent = `✓ ${upData.images.length} photo(s), ${upData.clips.length} clip(s) accepted.${skipped} Starting the video...`;
+    const phonkStyle = document.getElementById('carMotionPhonkSelect')?.value || 'drift_phonk';
+    const res = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        topic: name, auto_publish: false, style: 'car_edit', with_voice: false, with_music: true,
+        audio_mode: 'without_voice', duration, language: 'en', music_track: phonkStyle, music_volume: 0.92,
+        car_edit_title: title || null, phonk_style: phonkStyle,
+        car_motion_preset: document.getElementById('carMotionPresetSelect')?.value || 'swxft_dynamic',
+        beat_sync_mode: document.getElementById('carMotionBeatSyncSelect')?.value || 'swxft_velocity',
+        new_launch_upload_id: upData.upload_id, channel: 'autoflashx'
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `could not start (${res.status})`);
+    newLaunchFiles.photo = []; newLaunchFiles.clip = [];
+    renderNewLaunchLists();
+    closeNewLaunchModal();
+    await loadProjects();
+    pollGenerationStatus(data.project_id);
+  } catch (e) {
+    if (st) st.textContent = `❌ ${e.message}`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}

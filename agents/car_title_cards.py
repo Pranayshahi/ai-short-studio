@@ -420,9 +420,9 @@ def attach(project_dir: Path, scenes: List[Dict[str, Any]], image_paths: List[st
     scenes_dir = Path(project_dir) / "scenes"
     scenes_dir.mkdir(parents=True, exist_ok=True)
     # Never stack cards twice (re-runs)
-    while scenes and scenes[0].get("title_card"):
+    while scenes and scenes[0].get("title_card") in ("intro", "outro"):
         scenes.pop(0); image_paths.pop(0)
-    while scenes and scenes[-1].get("title_card"):
+    while scenes and scenes[-1].get("title_card") in ("intro", "outro"):
         scenes.pop(); image_paths.pop()
     visual_records[:] = [r for r in visual_records if r.get("source") != "car_title_card"]
 

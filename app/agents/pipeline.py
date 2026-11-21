@@ -368,6 +368,18 @@ class ShortsPipeline:
                     script_data["image_data"]["scenes"] = car_plan["scenes"]
                     script_data["image_data"]["is_weaponx_lab"] = False
                     script_data["image_data"]["is_weaponx_lab_static"] = False
+                # New Launch: the scenes are the user's own photos and clips (every one used)
+                _um = project_record.get("user_media") or {}
+                if _um.get("images") or _um.get("clips"):
+                    from agents import new_launch
+                    _main = round(target_dur - _intro_d - _outro_d - (_show_d if _um.get("images") else 0.0), 2)
+                    if not _um.get("images"):
+                        _show_d = 0.0  # the full-car showcase needs a photo
+                    car_plan["scenes"] = new_launch.plan_scenes(_um.get("images", []), _um.get("clips", []),
+                                                                _main, _bpm, template=car_plan["scenes"])
+                    script_data["scenes"] = car_plan["scenes"]
+                    if isinstance(script_data.get("image_data"), dict):
+                        script_data["image_data"]["scenes"] = car_plan["scenes"]
                 project_record["car_edit_plan"] = car_plan
 
             project_record["content_analysis"] = script_data
@@ -393,12 +405,19 @@ class ShortsPipeline:
             print(f"\n[Step 3/7] 🖼️ Running 'image-generator' agent using image_data from content-analyser...")
             project_record["progress_step"] = "image-generator: Generating & verifying topic images..."
             StorageManager.save_project(project_record)
-            image_report = self.image_generator.run(
-                topic_research=topic_info,
-                content_analysis=script_data,
-                output_dir=project_dir,
-                style=style,
-            )
+            if style == "car_edit" and car_plan and any(sc.get("user_media") for sc in script_data.get("scenes", [])):
+                from agents import new_launch
+                project_record["progress_step"] = "new-launch: Using your uploaded photos & clips..."
+                StorageManager.save_project(project_record)
+                print(f"[NewLaunch] 🚀 Building scenes from {len(script_data['scenes'])} uploaded photos/clips (no web photos)")
+                image_report = new_launch.build_visuals(project_dir, script_data["scenes"])
+            else:
+                image_report = self.image_generator.run(
+                    topic_research=topic_info,
+                    content_analysis=script_data,
+                    output_dir=project_dir,
+                    style=style,
+                )
             project_record["image_report"] = image_report
             visual_records = image_report["visual_records"]
             image_paths = image_report["image_paths"]

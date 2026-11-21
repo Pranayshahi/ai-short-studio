@@ -84,9 +84,18 @@ def pick_full_car_photos(visual_records: List[Dict[str, Any]], n: int = 2) -> Li
     """The best n complete-car photos among the video's own (verified) photos."""
     found = []
     for rec in visual_records:
-        if rec.get("source") != "web_free":
+        if rec.get("source") == "manual_upload":
+            # New Launch: the user's own photo (clips are not used for the showcase)
+            if rec.get("media_type") != "image" or not rec.get("local_path"):
+                continue
+            try:
+                photo = Image.open(rec["local_path"]).convert("RGB")
+            except Exception:
+                continue
+        elif rec.get("source") != "web_free":
             continue
-        photo = _download(rec.get("source_url") or "")
+        else:
+            photo = _download(rec.get("source_url") or "")
         if photo is None:
             continue
         res = full_car_cutout(photo)
