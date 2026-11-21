@@ -184,8 +184,9 @@ def start(name: str) -> None:
         raise RuntimeError(f"{name} start script not found: {svc['start'][0]}")
     log = open(LOG_DIR / f"{name}.log", "ab")
     subprocess.Popen(svc["start"], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-    deadline = time.time() + svc["start_timeout"]
-    while time.time() < deadline:
+    # monotonic: stops while the Mac sleeps, so a start interrupted by sleep isn't declared failed on wake
+    deadline = time.monotonic() + svc["start_timeout"]
+    while time.monotonic() < deadline:
         if _healthy(name):
             print(f"[Resources] {name} is up.")
             return

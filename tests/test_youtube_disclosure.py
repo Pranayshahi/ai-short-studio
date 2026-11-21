@@ -75,3 +75,12 @@ def test_label_set_in_studio_is_kept_on_approve(tmp_path):
 def test_opt_in_auto_label(tmp_path):
     sent = _run(tmp_path, current_label=None, auto=True)
     assert sent[0][1]["containsSyntheticMedia"] is True and sent[1][1]["containsSyntheticMedia"] is True
+
+
+def test_publish_and_approve_never_open_a_sign_in_window():
+    """Publishing with a missing/expired token must fail with a message, not start a browser OAuth flow
+    (it popped a Google window from the dashboard and blocked the request)."""
+    import inspect
+    from app.agents.youtube_publisher import YouTubePublisher as YP
+    src = inspect.getsource(YP)
+    assert 'interactive=not ch["token_path"].exists()' not in src

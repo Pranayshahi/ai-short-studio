@@ -159,8 +159,8 @@ class YouTubePublisher:
                     )
                 if not interactive:
                     raise RuntimeError(
-                        f"YouTube channel '{ch['key']}' ({ch.get('handle')}) is not authorized. "
-                        f"Run: python main.py --auth-youtube --channel {ch['key']}"
+                        f"YouTube channel '{ch['key']}' ({ch.get('handle')}) is not signed in. Sign in from "
+                        f"Settings → YouTube (Authorize), or run: python main.py --auth-youtube --channel {ch['key']}"
                     )
                 print(f"[YouTubePublisher] Starting OAuth browser sign-in for channel '{ch['key']}' ({ch.get('handle')})...")
                 print("[YouTubePublisher] In the Google window, choose the account AND the channel that matches.")
@@ -376,7 +376,9 @@ class YouTubePublisher:
             try:
                 youtube = cls.get_authenticated_service(
                     channel=ch["key"],
-                    interactive=not ch["token_path"].exists(),
+                    # never start a Google sign-in from Publish/Approve (it popped a browser window and
+                    # blocked the request); sign-in only from Settings or --auth-youtube
+                    interactive=False,
                 )
 
                 # The token must belong to the channel we are publishing to: never upload elsewhere
@@ -514,7 +516,9 @@ class YouTubePublisher:
                 if video_id and not str(video_id).startswith("staged_") and not wrong_channel:
                     youtube = cls.get_authenticated_service(
                         channel=ch["key"],
-                        interactive=not ch["token_path"].exists(),
+                        # never start a Google sign-in from Publish/Approve (it popped a browser window and
+                        # blocked the request); sign-in only from Settings or --auth-youtube
+                        interactive=False,
                     )
                     update_body = {
                         "id": video_id,

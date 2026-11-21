@@ -7332,7 +7332,7 @@ function renderNewLaunchLists() {
       cell.style.cssText = 'position:relative;width:86px;height:120px;border-radius:8px;overflow:hidden;background:#0f172a;border:1px solid #334155';
       const url = URL.createObjectURL(f);
       const media = document.createElement(kind === 'clip' ? 'video' : 'img');
-      media.src = url;
+      media.src = kind === 'clip' ? `${url}#t=0.3` : url;  // #t: browsers then draw a frame as the thumbnail
       media.style.cssText = 'width:100%;height:100%;object-fit:cover';
       if (kind === 'clip') { media.muted = true; media.preload = 'metadata'; }
       const x = document.createElement('button');

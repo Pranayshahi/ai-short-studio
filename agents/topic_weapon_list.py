@@ -78,7 +78,9 @@ def _search_titles(topic: str, kind: str = "") -> List[str]:
     from agents import equipment_catalog as ec
     core = re.sub(r"\b(modern|systems?|the|top|best|most|powerful|world'?s?|of|weapons?)\b", " ", topic, flags=re.I)
     titles: List[str] = []
-    for q in (topic, core.strip(), f"{core.strip()} weapon", *KIND_QUERIES.get(kind, [])):
+    sub = subtype_for(topic)
+    extra = sub[2] if sub else KIND_QUERIES.get(kind, [])
+    for q in (topic, core.strip(), f"{core.strip()} weapon", *extra):
         if not q.strip():
             continue
         data = ec._get({"action": "query", "list": "search", "srsearch": q, "srlimit": 15})
@@ -126,7 +128,42 @@ _EXCLUDE = {
 }
 
 
-def _is_kind(m: Dict[str, Any], kind: str, kind_re: str) -> bool:
+# A narrower topic narrows the chart: "Main Battle Tanks" lists tanks only (it listed IFVs and the NLAW
+# anti-tank missile, because their infobox types contain "tank"/"vehicle"). (topic, type must match,
+# type must not match, extra Wikipedia searches)
+_SUBTYPES: List[Tuple[str, str, str, List[str]]] = [
+    (r"(?<!anti-)(?<!anti )\btanks?\b", r"\btank\b",
+     r"anti-?\s?tank|tank destroyer|infantry|personnel|amphibious|recovery|bridge|engineer|reconnaissance|light tank",
+     ["main battle tank", "third-generation main battle tank"]),
+    (r"infantry fighting|\bifvs?\b", r"infantry fighting", r"anti-?\s?tank", ["infantry fighting vehicle"]),
+    (r"\bapcs?\b|personnel carrier", r"personnel carrier", r"anti-?\s?tank", ["armoured personnel carrier"]),
+    (r"handgun|pistol", r"pistol|handgun|revolver", r"submachine|machine pistol|rifle|carbine", ["semi-automatic pistol"]),
+    (r"sniper", r"sniper|marksman|anti-materiel", r"", ["sniper rifle"]),
+    (r"assault rifle", r"assault rifle|battle rifle", r"", ["assault rifle"]),
+    (r"attack helicopter|helicopter gunship|combat helicopter", r"attack|gunship|armed|anti-?\s?tank", r"transport|utility|cargo|trainer",
+     ["attack helicopter", "helicopter gunship", "armed reconnaissance helicopter"]),
+    (r"helicopter", r"helicopter", r"", ["attack helicopter", "military helicopter"]),
+    (r"bomber", r"bomber", r"", ["strategic bomber"]),
+    (r"\bdrones?\b|\buavs?\b|unmanned", r"unmanned|uav|drone|loitering", r"", ["unmanned combat aerial vehicle"]),
+    (r"stealth", r"stealth|low[- ]observab|fifth[- ]generation|sixth[- ]generation", r"helicopter|trainer",
+     ["stealth fighter", "fifth-generation fighter", "stealth multirole fighter"]),
+    (r"fighter", r"fighter|multirole|air superiority", r"helicopter|bomber|trainer", ["fighter aircraft", "multirole combat aircraft"]),
+    (r"howitzer", r"howitzer", r"", ["self-propelled howitzer"]),
+    (r"torpedo", r"torpedo", r"", ["heavyweight torpedo", "lightweight torpedo"]),
+]
+
+
+def subtype_for(topic: str) -> Optional[Tuple[str, str, List[str]]]:
+    t = (topic or "").lower()
+    for topic_re, must, never, queries in _SUBTYPES:
+        if re.search(topic_re, t):
+            if "fighter" in t and "bomber" not in t:
+                never = f"{never}|bomber" if never else "bomber"  # 'Stealth Fighter Jets' listed the B-21 bomber
+            return must, never, queries
+    return None
+
+
+def _is_kind(m: Dict[str, Any], kind: str, kind_re: str, sub: Optional[Tuple[str, str, List[str]]] = None) -> bool:
     """The article's infobox TYPE must say it's this kind of system (the lead text alone let in
     'India and weapons of mass destruction' and 'Virginia-class submarine')."""
     typ = str(m.get("type") or "")
@@ -135,13 +172,28 @@ def _is_kind(m: Dict[str, Any], kind: str, kind_re: str) -> bool:
     if not re.search(kind_re, typ, re.I):
         return False
     # Events and incidents are not weapons ("2026 Minab school attack" is typed "missile strike")
-    if re.search(r"attack|strike|incident|bombing|massacre|battle|\bwar\b|operation|crisis|crash|shootdown|explosion|test\b", typ, re.I):
+    if re.search(r"attack(?!\s+(?:helicopter|aircraft|submarine))|strike(?!\s+fighter)|incident|bombing|massacre|\bbattle\b(?!\s+(?:tank|rifle))|\bwar\b|operation|crisis|crash|shootdown|explosion|test\b", typ, re.I):
         return False
     # A weapon article states where it's from or when it entered service
     if not (m.get("origin") or m.get("year")):
         return False
     ex = _EXCLUDE.get(kind)
-    return not (ex and re.search(ex, typ, re.I))
+    if ex and re.search(ex, typ, re.I):
+        return False
+    if kind == "firearm" and re.search(r"^\.\d|^\d+(?:\.\d+)?\s?(?:mm\b|×|x\d)|\b(?:ACP|S&W|Parabellum)\s*$|cartridge",
+                                       f"{m['title']}|{typ}".split("|")[0] + (" cartridge" if "cartridge" in typ.lower() else ""), re.I):
+        return False  # '.45 ACP', '9×19mm Parabellum' are cartridges (their infobox type says 'Pistol'), not guns
+    if kind == "vehicle" and re.search(r"anti-?\s?tank|anti-?\s?armou?r", typ, re.I):
+        return False  # an anti-tank weapon is not an armoured vehicle
+    if sub:
+        must, never, _q = sub
+        # "stealth" is rarely the infobox type (F-22: 'Air superiority fighter'); the opening sentence says it
+        about = f"{typ} {m.get('lead') or ''}" if "stealth" in must else typ
+        if not re.search(must, about, re.I) or (never and re.search(never, typ, re.I)):
+            return False
+    if re.search(r"generation (?:fighter|jet|tank)|^(?:fighter|attack|multirole) aircraft$", m["title"], re.I):
+        return False  # a category article ('Fourth-generation fighter'), not a model
+    return True
 
 
 SIDE_PROFILE_KINDS = ("missile", "naval")
@@ -209,6 +261,7 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
     kind = kind_for(topic)
     spec = rp.KINDS.get(kind, rp.KINDS["missile"])
     kind_re, words = spec["kind_re"], spec["words"]
+    sub = subtype_for(topic)
     modern = bool(re.search(r"\bmodern|current|today|new(?:est)?\b", topic, re.I))
     excluded = {t.lower() for t in (exclude_titles or [])}
     verified: Dict[str, Dict[str, Any]] = {}
@@ -221,14 +274,14 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
     # 1) LLM names as exact Wikipedia titles (redirects followed), 2) fuzzy match for the rest
     direct = ec.fetch_models(names) if names else {}
     for m in direct.values():
-        if _is_kind(m, kind, kind_re):
+        if _is_kind(m, kind, kind_re, sub):
             verified.setdefault(m["title"], m)
     matched_names = {m.get("requested_as") for m in direct.values()}
     for name in names:
         if len(verified) >= max_rows + 6 or name in matched_names:
             continue
         m = rp.match_article(name, words, kind)
-        if m and _is_kind(m, kind, kind_re):
+        if m and _is_kind(m, kind, kind_re, sub):
             verified.setdefault(m["title"], m)
 
     if len(verified) < max_rows + 6:
@@ -236,7 +289,7 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
         for m in (ec.fetch_models(titles) if titles else {}).values():
             if len(verified) >= max_rows + 10:
                 break
-            if _is_kind(m, kind, kind_re):
+            if _is_kind(m, kind, kind_re, sub):
                 verified.setdefault(m["title"], m)
 
     # every row carries a flag + country (reference style); never a row the user rejected
@@ -249,6 +302,10 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
         models.sort(key=lambda m: -(m.get("year") or 0))
         recent = [m for m in models if (m.get("year") or 0) >= 1975]
         models = recent + [m for m in models if m not in recent] if len(recent) < min_rows else recent
+    # cancelled prototypes / category pages have no service year: only when there aren't enough real models
+    dated = [m for m in models if m.get("year")]
+    if len(dated) >= min_rows + 2:
+        models = dated + [m for m in models if not m.get("year") and m["title"] in (keep_titles or [])]
     models = _with_clean_photos(models, kind, max_rows)
     if len(models) < min_rows:
         return {"error": f"Only {len(models)} verified models found for '{topic}' (need {min_rows}).", "kind": kind}

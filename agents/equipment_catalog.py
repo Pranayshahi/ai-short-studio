@@ -106,15 +106,16 @@ def _infobox(wikitext: str) -> Dict[str, str]:
     fields: Dict[str, str] = {}
     # Comments can sit in front of a field on the same line ("<!-- Service history -->| service = ...")
     wikitext = re.sub(r"<!--.*?-->", "\n", wikitext, flags=re.S)
-    for m in re.finditer(r"^\s*\|\s*([a-z_0-9]+)\s*=\s*(.*?)(?=^\s*\||^\}\}|\Z)", wikitext, flags=re.M | re.S):
-        fields[m.group(1).lower()] = m.group(2).strip()
+    # field names may contain spaces ("national origin" = "national_origin")
+    for m in re.finditer(r"^\s*\|\s*([A-Za-z_0-9][A-Za-z_0-9 -]*?)\s*=\s*(.*?)(?=^\s*\||^\}\}|\Z)", wikitext, flags=re.M | re.S):
+        fields[re.sub(r"[ -]+", "_", m.group(1).lower())] = m.group(2).strip()
     return fields
 
 
 def _service_year(fb: Dict[str, str]) -> Optional[int]:
-    for key in ("service", "in_service", "introduced", "inservice", "production_date"):
+    for key in ("service", "in_service", "introduced", "introduction", "inservice", "production_date"):
         if fb.get(key):
-            m = _YEAR.search(_clean(fb[key]))
+            m = _YEAR.search(_clean(fb[key])) or _YEAR.search(fb[key])  # {{start date|2015|7|31}}
             if m:
                 return int(m.group(1))
     return None
@@ -207,7 +208,8 @@ def _specs(fb: Dict[str, str]) -> Dict[str, str]:
 
 
 def _origin(fb: Dict[str, str]) -> str:
-    o = _clean(fb.get("origin", "") or fb.get("place-of-origin", "") or fb.get("place_of_origin", ""))
+    o = _clean(fb.get("origin", "") or fb.get("place-of-origin", "") or fb.get("place_of_origin", "")
+               or fb.get("national_origin", ""))  # aircraft infoboxes
     return re.split(r";|,|/| and ", o)[0].strip()
 
 
@@ -245,7 +247,7 @@ def fetch_models(titles: List[str], thumb: int = 640) -> Dict[str, Dict[str, Any
                 "specs": _specs(fb),
                 "calibre_mm": _calibre_mm(fb),
                 "weight_t": _weight_t(fb),
-                "type": _clean(fb.get("type", "")),
+                "type": _clean(fb.get("type", "") or fb.get("aircraft_type", "")),  # aircraft: aircraft_type
                 "lead": lead[:300],
                 "article_length": pg.get("length", 0),
                 "is_prototype": (year is None) or any(w in status for w in ("prototype", "cancel", "development")),
