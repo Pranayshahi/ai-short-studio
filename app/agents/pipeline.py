@@ -62,7 +62,7 @@ def photo_credit_lines(visual_records: List[Dict[str, Any]]) -> List[str]:
         from agents import evolution_poster as _evp
         return _evp.compact_credits(poster_rec.get("photo_credits") or [])
     for v in visual_records:
-        if v.get("source") != "web_free" or str(v.get("source_url", "")).startswith("reframed://"):
+        if v.get("source") not in ("web_free", "car_showcase") or str(v.get("source_url", "")).startswith("reframed://"):
             continue
         link = v.get("page_url") or v.get("source_url")
         if not link or link in seen:
@@ -87,7 +87,7 @@ def attach_visual_metadata(script_data: Dict[str, Any], visual_records: List[Dic
                 who = re.sub(r"\s+", " ", str(pc.get("author") or "Unknown")).strip()[:60]
                 model = f"{pc.get('model')}: " if pc.get("model") else ""
                 credits.append(f"• {model}{who} · {pc.get('license') or 'see source'} · {link}")
-        if v.get("source") != "web_free" or str(v.get("source_url", "")).startswith("reframed://"):
+        if v.get("source") not in ("web_free", "car_showcase") or str(v.get("source_url", "")).startswith("reframed://"):
             continue
         link = v.get("page_url") or v.get("source_url")
         if not link or link in seen:
@@ -346,12 +346,14 @@ class ShortsPipeline:
                 from agents.car_edit_agent import CarEditAgent
                 target_dur = max(CAR_MIN_SECONDS, target_dur)
                 from agents import car_title_cards
-                _intro_d, _outro_d = car_title_cards.card_durations(
-                    CarEditAgent.get_phonk_bpm(project_record.get("phonk_style") or "drift_phonk"))
+                _bpm = CarEditAgent.get_phonk_bpm(project_record.get("phonk_style") or "drift_phonk")
+                _intro_d, _outro_d = car_title_cards.card_durations(_bpm)
+                from agents import car_showcase
+                _show_d = 2 * car_showcase.showcase_seconds(_bpm) if os.getenv("CAR_SHOWCASE", "on").lower() != "off" else 0.0
                 car_plan = CarEditAgent.build_car_edit_scenes(
                     car_name=topic_title,
-                    # the beat-cut edit fills the time between the intro and outro cards
-                    target_duration=round(target_dur - _intro_d - _outro_d, 2),
+                    # the beat-cut edit fills the time between the intro/outro cards and the 2 full-car showcases
+                    target_duration=round(target_dur - _intro_d - _outro_d - _show_d, 2),
                     custom_title=project_record.get("car_edit_title"),
                     topic_research=topic_info,
                     phonk_style=project_record.get("phonk_style") or "drift_phonk",
@@ -427,6 +429,23 @@ class ShortsPipeline:
                     handle = ""
                 project_record["progress_step"] = "car-edit-agent: Rendering brand-logo intro & end card..."
                 StorageManager.save_project(project_record)
+                # Full-car showcase scenes: the whole car, cut out of its uncropped photo and animated
+                if _show_d:
+                    project_record["progress_step"] = "car-edit-agent: Building full-car showcase scenes..."
+                    StorageManager.save_project(project_record)
+                    try:
+                        shown = car_showcase.attach(project_dir, script_data["scenes"], image_paths, visual_records,
+                                                    car_plan, topic_title)
+                    except Exception as e:
+                        print(f"[CarShowcase] skipped: {e}")
+                        shown = {"added": 0, "seconds": 0.0}
+                    missing = round(_show_d - shown["seconds"], 3)
+                    if missing > 0.05:
+                        # fewer showcases than planned: the last car shot holds longer so the video keeps its length
+                        last = next((sc for sc in reversed(script_data["scenes"]) if not sc.get("title_card")), None)
+                        if last:
+                            last["duration_seconds"] = round(float(last.get("duration_seconds") or 2.0) + missing, 3)
+                    project_record["car_showcase"] = shown
                 try:
                     cards = car_title_cards.attach(project_dir, script_data["scenes"], image_paths, visual_records,
                                                    car_plan, topic_title, handle)

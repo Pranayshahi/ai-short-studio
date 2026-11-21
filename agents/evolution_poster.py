@@ -95,8 +95,9 @@ def build_spec(topic: str, min_rows: int = 6, max_rows: int = 8) -> Dict[str, An
 _REMBG = None
 
 
-def _cutout(img: Image.Image) -> Optional[Image.Image]:
-    """Background-removed RGBA keeping only the largest object, or None if it looks incomplete."""
+def _cutout(img: Image.Image, with_box: bool = False):
+    """Background-removed RGBA keeping only the largest object, or None if it looks incomplete.
+    with_box=True returns (cutout, (x0, y0, x1, y1)) with the object's box in the photo's coordinates."""
     global _REMBG
     try:
         from rembg import new_session, remove
@@ -127,7 +128,8 @@ def _cutout(img: Image.Image) -> Optional[Image.Image]:
         a = Image.fromarray((keep * 255).astype("uint8")).filter(ImageFilter.GaussianBlur(0.8))
         out = rgba.copy()
         out.putalpha(a)
-        return out.crop((x0, y0, x1 + 1, y1 + 1))
+        cropped = out.crop((x0, y0, x1 + 1, y1 + 1))
+        return (cropped, (int(x0), int(y0), int(x1) + 1, int(y1) + 1)) if with_box else cropped
     except Exception:
         return None
 
@@ -210,7 +212,8 @@ def _exterior_ok(cut: Image.Image, kind: str = "vehicle") -> bool:
             return True
         import torch
         noun = {"naval": "torpedo or missile", "missile": "missile", "aircraft": "military aircraft",
-                "warship": "warship", "artillery": "artillery gun", "air_defense": "missile launcher vehicle"}.get(kind)
+                "warship": "warship", "artillery": "artillery gun", "air_defense": "missile launcher vehicle",
+                "car": "car"}.get(kind)
         if kind == "firearm":
             good = ["a product photo of a handgun on a plain background", "a photo of a pistol by itself",
                     "a side view of a firearm with nobody in the picture"]
@@ -220,6 +223,10 @@ def _exterior_ok(cut: Image.Image, kind: str = "vehicle") -> bool:
             good = [f"a photo of a {noun}", f"a side view of a complete {noun}", f"a {noun} on display"]
             bad = ["a photo of a person", "a group of people", "a close-up of a machine part", "a document or diagram",
                    "the interior of a building", "a map"]
+            if kind == "car":
+                # a showcase shows the WHOLE car, not a detail
+                bad += ["the interior of a car", "a close-up of a car wheel", "a car engine bay", "a close-up of a headlight",
+                        "a close-up of a car badge"]
             if kind in ("missile", "naval"):
                 # the weapon itself, not what carries or hides it (JASSM shown as an F-35; Gryphon under camo netting)
                 bad += ["a fighter jet aircraft", "a military truck", "camouflage netting over a vehicle", "a warship"]
