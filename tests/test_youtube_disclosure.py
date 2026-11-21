@@ -101,3 +101,17 @@ def test_weapon_videos_get_the_owners_hashtags():
         if False else YP.build_complete_fields("T-90 #Shorts", desc, ["tank"], channel="weaponxlabs")
     if meta:
         assert meta["description"].count("#ak47shorts") == 1
+
+
+def test_car_videos_get_the_owners_hashtags():
+    from agents.youtube_metadata import apply_car_hashtags, car_hashtags
+    tags = car_hashtags()
+    assert tags == ["#shorts", "#cars", "#dreamgarage", "#carcomparison", "#automobile", "#viral", "#trending",
+                    "#2026cars", "#dreamcar", "#AutoFlashX"], tags
+    d, t = apply_car_hashtags("Ferrari F80 car edit.\n#Shorts #Cars #Supercars", ["ferrari"])
+    assert d == "Ferrari F80 car edit.\n\n" + " ".join(tags) and "dreamgarage" in t
+    from app.agents.youtube_publisher import YouTubePublisher as YP
+    meta = YP.build_complete_fields("Ferrari F80 #Shorts", "Car edit.\n#Shorts #Cars", ["ferrari"], channel="autoflashx")
+    assert meta["description"].count("#dreamgarage") == 1 and "#Supercars" not in meta["description"]
+    w = YP.build_complete_fields("T-90 #Shorts", "Tank.", ["t-90"], channel="weaponxlabs")
+    assert "#dreamgarage" not in w["description"] and "#ak47shorts" in w["description"]

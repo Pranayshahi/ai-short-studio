@@ -645,6 +645,9 @@ class ShortsPipeline:
             if style in ("weaponx", "default", "openmontage") and (project_record.get("channel") or "weaponxlabs") != "autoflashx":
                 from agents.youtube_metadata import apply_weapon_hashtags
                 clean_description, clean_tags = apply_weapon_hashtags(clean_description, clean_tags)
+            elif style == "car_edit" or (project_record.get("channel") == "autoflashx"):
+                from agents.youtube_metadata import apply_car_hashtags
+                clean_description, clean_tags = apply_car_hashtags(clean_description, clean_tags)
             project_record.update({
                 "progress_step": "Verify-video: Finalizing & verifying image and video...",
                 "title": clean_title,

@@ -233,7 +233,12 @@ class YouTubePublisher:
             else ["#Shorts", "#WeaponXLabs", "#MilitaryTech", "#Defense"]
         )
         weapon_video = not is_car_chan and "#musiconly" not in clean_desc.lower()
-        if weapon_video:
+        if is_car_chan:
+            # the owner's standard car hashtag set, exactly (assets/data/car_hashtags.txt)
+            from agents.youtube_metadata import apply_car_hashtags
+            clean_desc, tags = apply_car_hashtags(clean_desc, list(tags or []))
+            required_hashtags = []
+        elif weapon_video:
             # the owner's standard weapon hashtag set, exactly (assets/data/weapon_hashtags.txt)
             from agents.youtube_metadata import apply_weapon_hashtags
             clean_desc, tags = apply_weapon_hashtags(clean_desc, list(tags or []))

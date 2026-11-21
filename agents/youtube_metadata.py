@@ -209,19 +209,39 @@ _DEFAULT_WEAPON_HASHTAGS = ("#defense #defence #military #Firearms #weaponshorts
                             "#evolution #shorts #youtubeshorts #trending")
 
 
-def weapon_hashtags() -> List[str]:
+CAR_HASHTAGS_FILE = WEAPON_HASHTAGS_FILE.with_name("car_hashtags.txt")
+_DEFAULT_CAR_HASHTAGS = "#shorts #cars #dreamgarage #carcomparison #automobile #viral #trending #2026cars #dreamcar #AutoFlashX"
+
+
+def _hashtags(path: Path, default: str) -> List[str]:
     try:
-        text = WEAPON_HASHTAGS_FILE.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except Exception:
-        text = _DEFAULT_WEAPON_HASHTAGS
-    tags = [t for t in re.findall(r"#[\w]+", text)]
-    return list(dict.fromkeys(tags)) or re.findall(r"#[\w]+", _DEFAULT_WEAPON_HASHTAGS)
+        text = default
+    seen, out = set(), []
+    for t in re.findall(r"#[\w]+", text) or re.findall(r"#[\w]+", default):
+        if t.lower() not in seen:  # '#cars' listed twice -> once
+            seen.add(t.lower())
+            out.append(t)
+    return out
 
 
-def apply_weapon_hashtags(description: str, tags: List[str]) -> Tuple[str, List[str]]:
+def weapon_hashtags() -> List[str]:
+    return _hashtags(WEAPON_HASHTAGS_FILE, _DEFAULT_WEAPON_HASHTAGS)
+
+
+def car_hashtags() -> List[str]:
+    return _hashtags(CAR_HASHTAGS_FILE, _DEFAULT_CAR_HASHTAGS)
+
+
+def apply_car_hashtags(description: str, tags: List[str]) -> Tuple[str, List[str]]:
+    return apply_weapon_hashtags(description, tags, block=car_hashtags())
+
+
+def apply_weapon_hashtags(description: str, tags: List[str], block: Optional[List[str]] = None) -> Tuple[str, List[str]]:
     """Description ends with exactly the standard hashtag block (lines made only of hashtags are replaced;
     hashtags inside sentences stay); the same words go into the YouTube tags. Idempotent."""
-    block = weapon_hashtags()
+    block = block or weapon_hashtags()
     lines = [ln for ln in (description or "").rstrip().splitlines()
              if not re.fullmatch(r"\s*(?:#[\w]+\s*)+", ln)]
     while lines and not lines[-1].strip():
