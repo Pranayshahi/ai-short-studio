@@ -212,7 +212,33 @@ def run(project: Dict[str, Any]) -> List[Dict[str, Any]]:
             checks.append(_check("Pacing: no flash scenes (< 1.2 s)", not short,
                                  f"shortest {min(durs):.1f}s" if not short else f"scenes {short} are under {MIN_SCENE_SECONDS}s",
                                  fix=None, remediation="Merge or lengthen those scenes' narration, then re-render."))
+    checks += fact_checks(project)
     return checks
+
+
+def fact_checks(project: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Owner's rule: every fact in the video is verified, otherwise it is left out (agents/fact_check.py)."""
+    try:
+        from agents import fact_check
+        problems = fact_check.check_project(project)
+    except Exception as e:
+        return [_check("Facts: verified against the sources", False, f"fact check could not run: {e}", fix=None,
+                       remediation="Run Auto-fix again when online; the video is held until its facts are checked.")]
+    groups = [
+        ("Facts: narration & captions verified (on-topic, numbers in the sources)", ("narration", "caption", "sources"), "remove_unverified_text"),
+        ("Facts: chart rows verified on Wikipedia", ("chart",), "rebuild_chart"),
+        ("Facts: title, description & car spec verified", ("title", "description", "car_spec"), None),
+    ]
+    out = []
+    for name, kinds, fix in groups:
+        ps = [p for p in problems if p["kind"] in kinds]
+        fx = fix or next((p.get("fix") for p in ps if p.get("fix")), None)
+        c = _check(name, not ps, "all verified" if not ps else "; ".join(p["detail"] for p in ps)[:900], fix=fx,
+                   remediation=None if not ps else ("Auto-fix removes / rebuilds the unverified parts." if fx else
+                                                     "Edit the text (or pin the value in assets/data/car_specs_overrides.json)."))
+        c["problems"] = [p["detail"] for p in ps]
+        out.append(c)
+    return out
 
 
 def _caption_checks(project: Dict[str, Any], v_dur: float) -> List[Dict[str, Any]]:

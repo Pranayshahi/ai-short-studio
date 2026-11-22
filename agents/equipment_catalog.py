@@ -123,7 +123,8 @@ def _service_year(fb: Dict[str, str]) -> Optional[int]:
 
 def _calibre_mm(fb: Dict[str, str]) -> Optional[float]:
     # The FIRST gun listed is the vehicle's main armament; later entries are often variants
-    text = _clean(fb.get("primary_armament", "") or fb.get("armament", ""))
+    import html as _html
+    text = _html.unescape(_clean(fb.get("primary_armament", "") or fb.get("armament", ""))).replace("\xa0", " ")
     for x in re.findall(r"(\d{2,3}(?:\.\d)?)\s*(?:-|\s)?mm", text):
         v = float(x)
         if 12 <= v <= 125:

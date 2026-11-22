@@ -391,6 +391,19 @@ class ShortsPipeline:
                         script_data["image_data"]["scenes"] = car_plan["scenes"]
                 project_record["car_edit_plan"] = car_plan
 
+            # Facts: narration sentences that are off-topic or carry numbers not in the sources are removed
+            # BEFORE the voice-over (owner's rule: correct data or nothing)
+            if style != "music_only":
+                try:
+                    from agents import fact_check
+                    removed = fact_check.filter_script(script_data, topic_info,
+                                                       topic_info.get("topic_subject") or topic_title)
+                    if removed:
+                        print(f"[FactCheck] removed before the voice-over: {removed}")
+                        project_record["fact_check_removed"] = removed
+                except Exception as e:
+                    print(f"[FactCheck] pre-check skipped: {e}")
+
             project_record["content_analysis"] = script_data
 
             # Option 3: compose the theme music in the background while images etc. are built (car videos
@@ -1215,6 +1228,31 @@ class ShortsPipeline:
 
             if "rerender" in fixes:
                 need_rerender = True
+
+            if "remove_unverified_text" in fixes:
+                from agents import fact_check
+                sd = {"scenes": project.get("scenes") or []}
+                removed = fact_check.filter_script(sd, project.get("topic_research") or {},
+                                                   (project.get("topic_research") or {}).get("topic_subject") or project.get("topic") or "")
+                if removed:
+                    project["scenes"] = sd["scenes"]
+                    project.setdefault("fact_check_removed", []).extend(removed)
+                    applied.append(f"removed {len(removed)} unverified line(s)")
+                    need_rerender = True
+
+            if "rebuild_chart" in fixes and self._static_chart_record(project):
+                try:
+                    if self.rebuild_weaponx_chart(project):
+                        sd = {"title": project.get("title") or "", "description": project.get("description") or "",
+                              "scenes": project.get("scenes") or []}
+                        attach_visual_metadata(sd, project.get("visual_records") or [])
+                        project["title"], project["description"] = sd["title"], sd["description"]
+                        from agents.youtube_metadata import apply_weapon_hashtags
+                        project["description"], project["tags"] = apply_weapon_hashtags(project["description"], project.get("tags") or [])
+                        applied.append("chart rebuilt with verified data only")
+                        need_rerender = True
+                except Exception as e:
+                    print(f"[AutoRepair] chart rebuild failed: {e}")
 
             if "restore_poster" in fixes and self.restore_weaponx_chart(project):
                 applied.append("WeaponX chart restored on every scene")

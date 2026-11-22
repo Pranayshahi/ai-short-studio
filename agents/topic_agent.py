@@ -798,7 +798,9 @@ class TopicAgent:
                 if sum_data and sum_data.get("extract"):
                     extract = sum_data.get("extract", "").strip()
                     desc = sum_data.get("description", "")
-                    if self._is_irrelevant_hit(title, f"{desc} {extract}", query):
+                    from agents.fact_check import off_domain
+                    if self._is_irrelevant_hit(title, f"{desc} {extract}", query) or (
+                            off_domain(f"{desc}. {extract[:300]}") and not off_domain(query)):
                         print(f"[{self.AGENT_NAME}] ⚠️ Filtered out summary after extraction: '{title}' ({desc})")
                         continue
 

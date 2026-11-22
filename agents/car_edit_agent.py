@@ -228,9 +228,28 @@ class CarEditAgent:
     def resolve_car_specs(cls, car_name: str, key_facts: Optional[List[str]] = None) -> Dict[str, str]:
         clean = re.sub(r"\s+", " ", (car_name or "Porsche 911 GT3 RS")).strip()
         low = clean.lower()
+        # 1. the owner's own pinned values (assets/data/car_specs_overrides.json) are trusted as-is
+        try:
+            from agents import specs_db
+            pinned = specs_db._read(specs_db.OVERRIDES).get(re.sub(r"\s+", " ", low))
+        except Exception:
+            pinned = None
         for key, spec in cls.KNOWN_CAR_SPECS.items():
             if key in low:
-                return dict(spec)
+                out = dict(spec)
+                if pinned and pinned.get("spec"):
+                    out["spec"] = pinned["spec"].upper()
+                    return out
+                # 2. built-in values are only shown when the car's sources confirm every number
+                #    (owner's rule: correct data or nothing)
+                try:
+                    from agents import fact_check
+                    checked = fact_check.verify_spec_line(out["spec"], clean, " ".join(key_facts or []))
+                except Exception as e:
+                    print(f"[{cls.AGENT_NAME}] spec check failed ({e}): numbers left out")
+                    checked = " · ".join(x for x in out["spec"].split(" · ") if not re.search(r"\d", x))
+                out["spec"] = checked or "PERFORMANCE EDITION · PURE ENGINEERING"
+                return out
 
         # Parse brand + model from user input
         tokens = clean.split()
