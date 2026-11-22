@@ -1527,7 +1527,10 @@ class ShortsPipeline:
         keep = [it.get("article") or it.get("name") for it in items if (it.get("article") or it.get("name")) not in excl]
         hero = Path(project["project_dir"]) / "scenes" / "hero_master.png"
         topic = (project.get("content_analysis") or {}).get("topic_subject") or project.get("topic", "")
-        new_rec = self.image_generator._acquire_topic_list_poster(topic, hero, keep_titles=keep, exclude_titles=excl)
+        if (self._static_chart_record(project) or {}).get("kind") == "cartridge":
+            new_rec = self.image_generator._acquire_cartridge_poster(hero)  # re-read every size from Wikipedia
+        else:
+            new_rec = self.image_generator._acquire_topic_list_poster(topic, hero, keep_titles=keep, exclude_titles=excl)
         new_rec.update(static_image=True, channel_style="weaponx_lab_static")
         self._apply_chart_to_all_scenes(project, hero, new_rec)
         project["chart_excluded"] = excl

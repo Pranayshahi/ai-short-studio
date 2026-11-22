@@ -56,6 +56,10 @@ class WeaponXPosterMixin:
         ranked_text = next((t for t in request_texts if ranked_poster.is_ranked_list(t)), "")
         if ranked_text:
             return self._acquire_ranked_poster(ranked_text, dest_path)
+        # Cartridges / bullets / ammunition of assault rifles: to-scale size comparison chart
+        if any(re.search(r"\b(?:cartridges?|bullets?|ammunition|ammo|rounds?|calibers?|calibres?)\b", t or "", re.I)
+               and re.search(r"assault rifle|rifle|\bar\b|ak", t or "", re.I) for t in request_texts):
+            return self._acquire_cartridge_poster(dest_path)
         if self._use_verified_evolution_poster(request_texts, clean_topic, poster_spec):
             from agents import evolution_poster
             evo_text = next((t for t in request_texts if evolution_poster.is_evolution_prompt(t)), "")
@@ -245,6 +249,26 @@ class WeaponXPosterMixin:
             "visual_quality": {"output_resolution": f"{self.target_width}x{self.target_height}", "passed": True, "photos": res["photos"]},
             "attempts_taken": 1,
             "prompt": text[:500],
+        }
+
+    def _acquire_cartridge_poster(self, dest_path: Path) -> Dict[str, Any]:
+        from agents import cartridge_poster
+        print(f"   🔥 [{self.AGENT_NAME}] Building WeaponX cartridge size comparison (Wikipedia dimensions, to scale)...")
+        res = cartridge_poster.build(Path(dest_path))
+        if res.get("error"):
+            raise RuntimeError(f"Cartridge chart: {res['error']}")
+        print(f"   ✓ [{self.AGENT_NAME}] {res['rows']} cartridges; left out: {res.get('skipped') or 'none'}")
+        return {
+            "scene_number": 1, "image_path": str(dest_path), "source": "weaponx_lab_poster", "kind": "cartridge",
+            "source_url": "https://en.wikipedia.org/wiki/List_of_assault_rifles", "source_domain": "en.wikipedia.org",
+            "source_provider": "WeaponX Labs cartridge chart (Wikipedia dimensions, drawn to scale)",
+            "license": "Drawn from data (no photos)", "author": "@WeaponXLabs Studio Engine",
+            "source_verified": True, "topic_matched": True, "topic_match_score": 99,
+            "topic_match_reason": f"{res['rows']} cartridges used by production assault rifles, sizes from Wikipedia",
+            "ranked_items": res["items"], "photo_credits": [], "skipped": res.get("skipped") or [],
+            "static_image": True, "channel_style": "weaponx_lab_static",
+            "visual_quality": {"output_resolution": f"{self.target_width}x{self.target_height}", "passed": True},
+            "attempts_taken": 1, "prompt": res.get("title", ""),
         }
 
     def _acquire_topic_list_poster(self, topic: str, dest_path: Path, keep_titles: Optional[List[str]] = None,

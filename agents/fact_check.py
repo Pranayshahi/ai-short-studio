@@ -332,6 +332,9 @@ def _check_chart(poster: Dict[str, Any], project: Dict[str, Any]) -> List[Dict[s
     from agents import equipment_catalog as ec
     from agents import topic_weapon_list as twl
     items = poster.get("ranked_items") or []
+    if poster.get("kind") == "cartridge":  # to-scale cartridge chart: every dimension re-read from Wikipedia
+        from agents import cartridge_poster
+        return [{"kind": "chart", "detail": d, "fix": "rebuild_chart"} for d in cartridge_poster.verify_items(items)]
     kind = poster.get("kind") or twl.kind_for(project.get("topic") or "")
     out: List[Dict[str, Any]] = []
     try:
