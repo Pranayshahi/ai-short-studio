@@ -114,3 +114,38 @@ def test_family_key_and_top_n():
     assert t.family_key("Challenger 2") != t.family_key("Challenger 3")
     assert t.family_key("Type 99 tank") == t.family_key("Type 99A")
     assert t.top_n("Top 10 Main Battle Tanks") == 10 and t.top_n("Modern tanks") is None
+
+
+def test_numbers_on_charts_are_right_or_absent():
+    """2026-11-21: 'T-14 Armata - Range 5 km' was published (the article's 'range' field is the GUN's range;
+    the tank's is vehicle_range = 500 km). A wrong number is worse than a missing one."""
+    fb = ec._infobox("{{Infobox weapon\n| vehicle_range = Min. {{convert|500|km|mi}}<ref name=a/>\n"
+                     "| range = 5 km, [[Uralvagonzavod]] claims\n| speed = {{convert|75|–|80|km/h}} (estimated)\n"
+                     "| number = Over 200,000<ref>x</ref>\n}}")
+    sp = ec._specs(fb)
+    m = {"_kind": "vehicle", "specs": sp, "year": 2015}
+    good = t.checked_specs(m)
+    assert good.get("Range") == "at least 500 km", good
+    assert "Speed" not in good, "estimated values are never shown"
+    assert sp.get("No. built") == "over 200,000"
+    assert ec._metric("300 mi") == "483 km" and ec._metric("30 mph") == "48 km/h"
+    # out-of-range or wrong-unit values are dropped, per kind
+    assert "Range" not in t.checked_specs({"_kind": "vehicle", "specs": {"Vehicle range": "5 km"}})
+    assert "Range" not in t.checked_specs({"_kind": "firearm", "specs": {"Range": "50 km"}})
+    assert t.checked_specs({"_kind": "firearm", "specs": {"Range": "600 m"}})["Range"] == "600 m"
+    # never a future (planned) service year
+    assert t.shown_year({"year": 2027}) == "" and t.shown_year({"year": 2014}) == "2014"
+    b1, b2 = t._bullets({"_kind": "vehicle", "specs": {}, "type": "Main battle tank", "year": 2027})
+    assert "2027" not in b1 + b2
+    assert "at least at least" not in ec._specs(ec._infobox("{{I\n| range = At least 200 km\n}}")).get("Range", "").lower()
+
+
+def test_top_n_matches_rows_shown():
+    assert t.fix_top_n("Top 10 Main Battle Tanks", 8) == "Top 8 Main Battle Tanks"
+    assert t.fix_top_n("TOP 10 MOST ADVANCED APCS", 10) == "TOP 10 MOST ADVANCED APCS"
+    from app.agents.pipeline import attach_visual_metadata
+    sd = {"title": "Top 10 Tanks: WeaponX Lab Breakdown 🔥 #Shorts", "description": "#Shorts",
+          "scenes": [{"on_screen_text": "TOP 10 TANKS", "narration": "this is Top 10 Tanks."}]}
+    rec = {"source": "weaponx_lab_poster", "image_path": "x", "ranked_items": [{"rank": i, "name": f"T{i}", "country": "X", "year": "", "bullets": []} for i in range(1, 9)]}
+    attach_visual_metadata(sd, [rec])
+    assert sd["title"].startswith("Top 8") and sd["scenes"][0]["on_screen_text"] == "TOP 8 TANKS" and "Top 8" in sd["scenes"][0]["narration"]

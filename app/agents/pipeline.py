@@ -99,6 +99,15 @@ def attach_visual_metadata(script_data: Dict[str, Any], visual_records: List[Dic
     # compactly (only licences that require it, short links) instead of the long per-photo block
     from agents import evolution_poster as _evp
     poster_rec = next((v for v in visual_records if v.get("ranked_items") or v.get("evolution_pairs")), None)
+    if poster_rec and poster_rec.get("ranked_items"):
+        # 'Top 10' in the title/captions/narration must match the rows actually shown
+        from agents.topic_weapon_list import fix_top_n
+        n_rows = len(poster_rec["ranked_items"])
+        script_data["title"] = fix_top_n(script_data.get("title") or "", n_rows)
+        for sc in script_data.get("scenes", []):
+            for k in ("on_screen_text", "narration", "voiceover_text"):
+                if sc.get(k):
+                    sc[k] = fix_top_n(sc[k], n_rows)
     if poster_rec:
         body = _evp.description_body(poster_rec)
         tags_line = next((ln for ln in script_data.get("description", "").splitlines() if ln.startswith("#")), "#Shorts")

@@ -127,21 +127,73 @@ _BULLET_ORDER = ["Range", "Speed", "Warhead", "No. built", "Cartridge", "Calibre
                  "Engine", "Guidance", "Length"]
 
 
-def _bullets(m: Dict[str, Any]) -> Tuple[str, str]:
-    """Two real specs from the article's infobox, like the reference chart ('Cartridge - 7.62x39 mm',
-    'No. built - 75 million'); type / service year only when the article has no usable specs."""
+# Realistic limits per kind (unit, low, high). A value outside them, or in another unit, is NOT shown:
+# a wrong number on a chart is worse than a missing one (T-14 'Range - 5 km' was published).
+_BOUNDS: Dict[str, Dict[str, Tuple[str, float, float]]] = {
+    "vehicle": {"Range": ("km", 100, 1500), "Speed": ("km/h", 15, 140), "Weight": ("t", 2, 90), "Main gun": ("mm", 7, 160)},
+    "artillery": {"Range": ("km", 3, 500), "Speed": ("km/h", 10, 140), "Weight": ("t", 1, 80)},
+    "aircraft": {"Range": ("km", 100, 20000), "Speed": ("km/h", 100, 4500)},
+    "warship": {"Range": ("km", 500, 60000), "Speed": ("km/h", 10, 100)},
+    "missile": {"Range": ("km", 0.3, 20000)},
+    "air_defense": {"Range": ("km", 1, 1000)},
+    "naval": {"Range": ("km", 0.5, 20000)},
+    "firearm": {"Range": ("m", 10, 3000), "Weight": ("kg", 0.2, 25), "Fire rate": ("rounds/min", 1, 6000)},
+}
+
+
+def _first_number(v: str) -> Optional[float]:
+    m = re.search(r"(\d[\d,]*(?:\.\d+)?)", v or "")
+    return float(m.group(1).replace(",", "")) if m else None
+
+
+def _this_year() -> int:
+    import datetime
+    return datetime.date.today().year
+
+
+def shown_year(m: Dict[str, Any]) -> str:
+    """Service year for the chart: never a future (planned) year."""
+    y = m.get("year")
+    return str(y) if y and y <= _this_year() else ""
+
+
+def checked_specs(m: Dict[str, Any]) -> Dict[str, str]:
+    """The model's specs that are certainly right for THIS kind of system, everything else dropped."""
+    kind = m.get("_kind") or ""
     specs = dict(m.get("specs") or {})
-    order = _BULLET_ORDER
-    if m.get("_kind") == "vehicle":
-        # tanks/IFVs are compared by their gun and weight (like '120 mm gun' in editorial lists)
+    vr = specs.pop("Vehicle range", None)
+    if kind in ("vehicle", "artillery"):
+        # a vehicle's range is its driving range; the plain 'range' field is its gun's (T-14: 5 km)
+        specs.pop("Range", None)
+        if vr:
+            specs["Range"] = vr
         if m.get("calibre_mm"):
             specs["Main gun"] = f"{m['calibre_mm']:g} mm"
         if m.get("weight_t") and not specs.get("Weight"):
             specs["Weight"] = f"{m['weight_t']:g} t"
+    if specs.get("Weight"):
+        specs["Weight"] = re.sub(r"\s*(?:tonnes?|metric tons?)\b", " t", specs["Weight"])
+    for label, (unit, lo, hi) in _BOUNDS.get(kind, {}).items():
+        v = specs.get(label)
+        if not v:
+            continue
+        if label == "Speed" and v.lower().startswith("mach"):
+            continue  # Mach figures are checked by their own form
+        n = _first_number(v)
+        unit_ok = re.search(rf"\d\s*{re.escape(unit)}\b", v.replace("tonnes", "t").replace("tonne", "t")) is not None
+        if n is None or not unit_ok or not (lo <= n <= hi):
+            specs.pop(label)
+    return specs
+
+
+def _bullets(m: Dict[str, Any]) -> Tuple[str, str]:
+    """Two real specs from the article's infobox, like the reference chart ('Cartridge - 7.62x39 mm',
+    'No. built - 75 million'); type / service year only when the article has no usable specs."""
+    specs = checked_specs(m)
+    order = _BULLET_ORDER
+    if m.get("_kind") == "vehicle":
+        # tanks/IFVs are compared by their gun and weight (like '120 mm gun' in editorial lists)
         order = ["Main gun", "Weight", "Speed", "Range", "No. built"]
-        rng = re.search(r"([\d,.]+)\s*km\b", specs.get("Range", ""))
-        if rng and float(rng.group(1).replace(",", "")) < 100:
-            specs.pop("Range")  # 'Range - 5 km' is a gun/missile range, not the tank's driving range
         if specs.get("Weight"):
             specs["Weight"] = re.sub(r"\s*(?:tonnes?|metric tons?)\b", " t", specs["Weight"])
     picks = [f"{k} - {specs[k]}" for k in order if specs.get(k)][:2]
@@ -150,7 +202,8 @@ def _bullets(m: Dict[str, Any]) -> Tuple[str, str]:
         if len(typ) > 34:
             typ = typ[:34].rsplit(" ", 1)[0]
             typ = re.sub(r"\s+(?:and|or|with|of|for|the|a|an|to|in)$", "", typ)
-        for extra in ([f"Type - {typ}"] if typ else []) + ([f"In service - {m['year']}"] if m.get("year") else []):
+        yr = m.get("year") if (m.get("year") or 9999) <= _this_year() else None  # 2027 = planned, not in service
+        for extra in ([f"Type - {typ}"] if typ else []) + ([f"In service - {yr}"] if yr else []):
             if len(picks) < 2:
                 picks.append(extra)
     picks += [""] * (2 - len(picks))
@@ -285,6 +338,11 @@ def pageviews(titles: List[str], days: int = 90) -> Dict[str, int]:
     except Exception:
         pass
     return out
+
+
+def fix_top_n(text: str, n: int) -> str:
+    """'Top 10 ...' -> 'Top 8 ...' when only 8 models could be verified (a 'Top 10' showing 8 is wrong)."""
+    return re.sub(r"(?i)\b(top)(\s+)(\d{1,2})\b", lambda m: f"{m.group(1)}{m.group(2)}{n}" if int(m.group(3)) != n else m.group(0), text or "")
 
 
 def top_n(topic: str) -> Optional[int]:
@@ -436,7 +494,7 @@ def build_rows(topic: str, min_rows: int = 5, max_rows: int = 8, keep_titles: Op
         b1, b2 = _bullets(m)
         rows.append({"rank": i, "name": re.sub(r"\s*\([^)]*\)\s*$", "", m["title"]).strip(), "query": m["title"],
                      "country": ec._country(m.get("origin") or "") if m.get("origin") else "",
-                     "year": m.get("year") or "", "bullet_1": b1, "bullet_2": b2})
+                     "year": shown_year(m), "bullet_1": b1, "bullet_2": b2})
     return {"kind": kind, "rows": rows, "models": models}
 
 
@@ -449,7 +507,7 @@ def make_poster(topic: str, out_path, cache_dir, keep_titles: Optional[List[str]
     spec = build_rows(topic, keep_titles=keep_titles, exclude_titles=exclude_titles)
     if spec.get("error"):
         return spec
-    title = re.sub(r"\s+", " ", topic).strip().upper()
+    title = fix_top_n(re.sub(r"\s+", " ", topic).strip().upper(), len(spec["rows"]))
     items, resolved = [], []
     for r, m in zip(spec["rows"], spec["models"]):
         m["_kind"] = spec["kind"]

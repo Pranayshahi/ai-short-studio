@@ -328,13 +328,14 @@ def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[Li
         row = {"rank": len(resolved) + 1, "name": it["name"],
                "country": it.get("country") or (ec._country(m["origin"]) if m.get("origin") else ""),
                # the article's service year is the BASE model's: only shown when the row IS that model
-               "year": str(m.get("year") or "") if same_model else "",
+               "year": twl.shown_year(m) if same_model else "",
                "lookup": m["title"], "specs": {"_bullets": [b1, b2]}, "note": it.get("note", "")}
         resolved.append((row, m))
         time.sleep(0.3)
     if len(resolved) < 5:
         return {"error": f"Only {len(resolved)} of the listed models could be verified on Wikipedia (need 5). "
                          f"Not verified: {'; '.join(skipped)[:400]}", "skipped": skipped}
+    title = twl.fix_top_n(title, len(resolved))  # the user's 'Top 20' list shows at most 10 rows
     chart = {"title": title.upper(), "full_title": parsed["full_title"], "items": [r for r, _ in resolved], "kind": kind}
     res = render(chart, resolved, out_path, cache_dir)
     if res.get("error"):
@@ -360,6 +361,14 @@ def _build(parsed: Dict[str, Any], out_path: Path, cache_dir: Path, kind: str) -
         m = match_article(it.get("lookup") or it["name"], words, kind)
         if m is not None:
             m["_kind"] = kind  # photo selection checks what a good picture of this kind looks like
+            if (it.get("specs") or {}).get("_bullets") is not None:
+                # Built-in (hand-written) rows: every fact comes from the model's Wikipedia article and passes
+                # the checks; the hand-written numbers were unsourced ('SIG M17 - 500 Thousand' vs 200,000)
+                from agents import topic_weapon_list as twl
+                it["specs"]["_bullets"] = [b for b in twl._bullets(m) if b]
+                it["year"] = twl.shown_year(m) if _norm(it["name"]) == _norm(m["title"]) else ""
+                if m.get("origin"):
+                    it["country"] = ec._country(m["origin"])
         if m is None:
             missing.append(it["name"])
         resolved.append((it, m))
@@ -368,7 +377,6 @@ def _build(parsed: Dict[str, Any], out_path: Path, cache_dir: Path, kind: str) -
         # Never draw a stand-in for a model we couldn't find a real photo of
         return {"error": f"No verified photo found for: {', '.join(missing)}", "parsed": parsed}
     res = render(parsed, resolved, out_path, cache_dir)
-    pairs_like = [{"historical": m, "modern": m} for _, m in resolved]
     credits = ev.photo_credits([{"historical": m, "modern": m} for _, m in resolved])
     seen, uniq = set(), []
     for c in credits:

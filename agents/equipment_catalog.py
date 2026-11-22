@@ -170,7 +170,10 @@ def _nationality(lead: str) -> str:
 
 # Infobox fields worth a WeaponX bullet, in order of preference (label shown on the chart)
 _SPEC_FIELDS = [
-    ("range", "Range"), ("vehicle_range", "Range"), ("max_range", "Range"), ("effective_range", "Range"),
+    # 'range' on a TANK page is the gun's range (T-14: '5 km, Uralvagonzavod claims'); the driving range is
+    # 'vehicle_range' (500 km). Kept apart; topic_weapon_list._bullets picks the right one per kind.
+    ("vehicle_range", "Vehicle range"), ("operational_range", "Range"), ("range", "Range"), ("max_range", "Range"),
+    ("effective_range", "Range"),
     ("speed", "Speed"), ("max_speed", "Speed"), ("warhead", "Warhead"), ("warhead_weight", "Warhead"),
     ("number", "No. built"), ("number_built", "No. built"), ("produced", "No. built"),
     ("guidance", "Guidance"), ("engine", "Engine"), ("propellant", "Propellant"), ("cartridge", "Cartridge"),
@@ -190,11 +193,18 @@ def _specs(fb: Dict[str, str]) -> Dict[str, str]:
         if label in out or not fb.get(key):
             continue
         v = html.unescape(_clean(fb[key])).replace("\xa0", " ")
-        if re.search(r"\bvar(y|ies|iable)\b|classified|unknown", v, re.I):
+        # only values the article states as fact: no claims, estimates, rumours or unknowns
+        if re.search(r"\bvar(y|ies|iable)\b|classified|unknown|claim|estimat|\best\.|reported|allegedly|"
+                     r"unconfirmed|speculat|rumou?r|disputed|\?", v, re.I):
             continue
         if label == "No. built":
             m = re.search(r"\b(\d{1,3}(?:,\d{3})+|\d{2,7})\b", v)
             val = m.group(1) if m else ""
+            # keep the source's qualifier: 'Over 200,000' must not read as exactly 200,000
+            if val and re.search(rf"(?:over|more than|at least|>)\s*{re.escape(val)}|{re.escape(val)}\s*\+", v, re.I):
+                val = f"over {val}"
+            elif val and re.search(rf"(?:approx\w*\.?|about|around|~|c\.)\s*{re.escape(val)}", v, re.I):
+                val = f"about {val}"
         elif label in ("Engine", "Guidance", "Propellant", "Cartridge"):
             val = re.split(r";|\(|,", v)[0].strip()
             val = val if 3 <= len(val) <= 32 else ""
@@ -202,9 +212,24 @@ def _specs(fb: Dict[str, str]) -> Dict[str, str]:
             m = _VALUE.search(v)
             val = re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
             val = re.sub(r"(?i)^mach", "Mach", val)
+            val = _metric(val)
+            if re.match(r"(?i)min\.?\s|minimum|at least", v) and val and not re.match(r"(?i)over|at least|>", val):
+                val = f"at least {val}"  # 'Min. 500 km' must not read as exactly 500 km
         if val:
             out[label] = val
     return out
+
+
+def _metric(val: str) -> str:
+    """One unit system on the chart: 300 mi -> 483 km, 30 mph -> 48 km/h, 1,500 lb -> 680 kg, 12 nmi -> 22 km."""
+    m = re.fullmatch(r"(.*?)(\d[\d,.]*)(?:\s*[–-]\s*(\d[\d,.]*))?\s*(mi|mph|lb|nmi|ft|in)", val.strip())
+    if not m:
+        return val
+    f = {"mi": (1.609, "km"), "mph": (1.609, "km/h"), "lb": (0.4536, "kg"), "nmi": (1.852, "km"),
+         "ft": (0.3048, "m"), "in": (25.4, "mm")}[m.group(4)]
+    conv = lambda x: f"{float(x.replace(',', '')) * f[0]:,.0f}"
+    rng = f"{conv(m.group(2))}–{conv(m.group(3))}" if m.group(3) else conv(m.group(2))
+    return f"{m.group(1)}{rng} {f[1]}".strip()
 
 
 def _type_text(raw: str) -> str:
