@@ -273,7 +273,7 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
             or bool(image_data.get("is_weaponx_lab_static"))
             or (
                 (bool(image_data.get("is_weaponx_lab")) or str(style).lower() in ("weaponx_lab", "weaponx lab"))
-                and target_dur == 10.0
+                and float(target_dur or 10.0) <= 20.0
             )
         )
 
@@ -295,7 +295,8 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
             print(f"[{self.AGENT_NAME}] -> Specific model {subject_desigs}: images must name it (no generic look-alikes).")
 
         # Step 1: Deep Search across Wikimedia Commons & Wikipedia with extended provenance metadata
-        candidate_pool = self._deep_search_images_with_provenance(clean_topic, keywords, limit=20)
+        candidate_pool = self._deep_search_images_with_provenance(
+            clean_topic, keywords, limit=20, car_mode=str(style).lower() == "car_edit")
         print(f"[{self.AGENT_NAME}] -> Retrieved {len(candidate_pool)} candidate images from web search.")
 
         # Step 2: Evaluate candidates & enforce Source Check + Topic Match Check
@@ -339,7 +340,7 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
             verified_candidates.append(cand)
 
         # Sort verified candidates by topic_match_score descending
-        verified_candidates.sort(key=lambda x: x.get("topic_match_score", 0), reverse=True)
+        verified_candidates.sort(key=lambda x: (bool(x.get("official_brand")), x.get("topic_match_score", 0)), reverse=True)
         print(
             f"[{self.AGENT_NAME}] -> {len(verified_candidates)} candidates passed Source & Topic Match checks "
             f"({len(change_image_events)} rejected via CHANGE_IMAGE)."
@@ -483,6 +484,11 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
                         f"Content check: image looks like '{content_check.get('best_label')}' "
                         f"(target score {content_check.get('score')}%)"
                     )
+            if ok and cand.get("official_brand"):
+                person = self._person_share(dest_path)
+                if person is not None and person >= self.PERSON_SHARE_LIMIT:
+                    ok = False
+                    quality_info["reason"] = f"Official press photo shows people ({person:.0%}), not the car"
             if ok:
                 dup_of = self._duplicate_of(dest_path, accepted_real_images)
                 if dup_of:
@@ -738,13 +744,26 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
         clean_topic: str,
         keywords: List[str],
         limit: int = 15,
+        car_mode: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Searches Wikimedia Commons API with extmetadata (license, artist, description, categories)
         and curated verified pools.
+        car_mode=True (car videos): the car maker's official newsroom photos come FIRST (owner's rule),
+        then the usual sources.
         """
         results: List[Dict[str, Any]] = []
         seen_urls = set()
+
+        if car_mode:
+            try:
+                from agents import brand_media
+                for cand in brand_media.search_official_images(clean_topic, limit=max(limit, 20)):
+                    if cand["url"] not in seen_urls:
+                        seen_urls.add(cand["url"])
+                        results.append(cand)
+            except Exception as e:
+                print(f"[{self.AGENT_NAME}] Official brand photos skipped: {e}")
 
         topic_lower = f"{clean_topic} {' '.join(keywords)}".lower()
         core = subject_core(clean_topic)
@@ -1018,7 +1037,8 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
                 "reason": f"Source resolution too low ({w}x{h} < 450x350 minimum)",
             }
 
-        provider_name = self.TRUSTED_DOMAINS.get(domain, f"Verified Web Media ({domain})")
+        provider_name = (candidate.get("author") if candidate.get("official_brand")
+                         else self.TRUSTED_DOMAINS.get(domain, f"Verified Web Media ({domain})"))
         return True, {
             "domain": domain,
             "provider_name": provider_name,
@@ -1428,7 +1448,8 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
         keywords = [clean_topic.lower()] + [w for w in re.findall(r"[A-Za-z0-9-]{3,}", clean_topic.lower())]
         desigs = designators(subject_core(clean_topic))
         verified: List[Dict[str, Any]] = []
-        for cand in self._deep_search_images_with_provenance(clean_topic, keywords, limit=25):
+        for cand in self._deep_search_images_with_provenance(clean_topic, keywords, limit=25,
+                                                              car_mode=str(style).lower() == "car_edit"):
             src_ok, src_info = self._verify_image_source(cand)
             if not src_ok:
                 continue
@@ -1534,7 +1555,8 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
             if w.lower() not in ("photorealistic", "cinematic", "lighting", "shot", "vertical", "render", "high", "speed", "modern", "dramatic")
         ]
         print(f"[{self.AGENT_NAME}] 🔎 Generative AI busy/offline. Searching verified photo repositories for: '{clean_topic}'...")
-        web_candidates = self._deep_search_images_with_provenance(clean_topic, keywords[:4], limit=8)
+        web_candidates = self._deep_search_images_with_provenance(clean_topic, keywords[:4], limit=8,
+                                                                   car_mode=str(style).lower() == "car_edit")
         for cand in web_candidates:
             c_url = cand.get("url")
             if c_url:

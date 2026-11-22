@@ -28,3 +28,20 @@ def test_verify_items_catches_changed_numbers():
         ok = [{"name": "5.56×45mm NATO", "article": "5.56×45mm NATO", "dims": {"length": 57.4, "bullet": 5.7, "case_length": 44.7, "base": 9.58}}]
         bad = [{"name": "5.56×45mm NATO", "article": "5.56×45mm NATO", "dims": {"length": 60.0, "bullet": 5.7, "case_length": 44.7, "base": 9.58}}]
         assert cp.verify_items(ok) == [] and cp.verify_items(bad)
+
+
+def test_weaponx_chart_mode_is_not_only_10_seconds():
+    """A 15 s WeaponX request became a generic multi-scene video without the chart (static mode was == 10.0)."""
+    import inspect
+    from agents import content_analyser, image_generator
+    src = inspect.getsource(content_analyser) + inspect.getsource(image_generator)
+    assert "duration == 10.0" not in src and "target_dur == 10.0" not in src
+
+
+def test_cartridge_topics_route_to_the_size_chart():
+    import re
+    from agents import image_posters
+    src = open(image_posters.__file__).read()
+    assert "_acquire_cartridge_poster(dest_path)" in src
+    pat = r"\b(?:cartridges?|bullets?|ammunition|ammo|rounds?|calibers?|calibres?)\b"
+    assert re.search(pat, "All Bullets Used in Assault Rifles Worldwide", re.I)

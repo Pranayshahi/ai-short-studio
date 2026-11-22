@@ -193,7 +193,9 @@ class ContentAnalyserAgent:
         else:
             duration = 30.0
         aspect_ratio = "9:16"
-        is_weaponx_lab_static = is_weaponx_lab and (duration == 10.0)
+        # WeaponX chart videos: the chart is the whole video at any short length (it was exactly 10 s only,
+        # so a 15 s request silently became a generic multi-scene video without the chart)
+        is_weaponx_lab_static = is_weaponx_lab and (float(duration or 10.0) <= 20.0)
         raw_draft = topic_research.get("raw_draft_script", "")
         research_text = topic_research.get("research_text", "")
         verified_facts = topic_research.get("verified_facts", [])
@@ -619,7 +621,8 @@ class ContentAnalyserAgent:
         topic_lower = topic.lower()
 
         # WEAPONX LAB MODE: Specifically 10-second 9:16 Short with static channel-style hero image
-        if is_weaponx_lab and duration == 10.0:
+        if is_weaponx_lab and float(duration or 10.0) <= 20.0:
+            half = round(float(duration or 10.0) / 2, 2)  # two scenes share the requested length
             # Craft punchy, grammatically complete 10-14 word sentences for 150-165 WPM pacing.
             # Match on the SUBJECT, whole words only: matching the whole pasted request let "pla" hit
             # "platform" and gave a Top-10 IFV list China's rifle-arsenal intro.
@@ -666,7 +669,7 @@ class ContentAnalyserAgent:
                 {
                     "scene_number": 1,
                     "scene_id": 1,
-                    "duration_seconds": 5.0,
+                    "duration_seconds": half,
                     "narration": short_hook,
                     "voiceover_text": short_hook,
                     "visual_prompt": static_prompt,
@@ -677,7 +680,7 @@ class ContentAnalyserAgent:
                 {
                     "scene_number": 2,
                     "scene_id": 2,
-                    "duration_seconds": 5.0,
+                    "duration_seconds": half,
                     "narration": core_fact,
                     "voiceover_text": core_fact,
                     "visual_prompt": static_prompt,
@@ -689,7 +692,7 @@ class ContentAnalyserAgent:
             pacing_fixes.append({
                 "check": "WeaponX Lab 10s Pacing Calibration",
                 "issue": "Calibrating narration and scenes for 10-second 9:16 WeaponX Lab Short.",
-                "correction": f"Structured 2 scenes (5.0s + 5.0s = 10.0s) with {len((short_hook + ' ' + core_fact).split())} total words.",
+                "correction": f"Structured 2 scenes ({half}s + {half}s = {2 * half}s) with {len((short_hook + ' ' + core_fact).split())} total words.",
             })
             return {
                 "title": f"{clean_name}: WeaponX Lab Breakdown 🔥 #Shorts",
