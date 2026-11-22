@@ -45,3 +45,23 @@ def test_cartridge_topics_route_to_the_size_chart():
     assert "_acquire_cartridge_poster(dest_path)" in src
     pat = r"\b(?:cartridges?|bullets?|ammunition|ammo|rounds?|calibers?|calibres?)\b"
     assert re.search(pat, "All Bullets Used in Assault Rifles Worldwide", re.I)
+
+
+def test_photo_rules():
+    """Only ONE complete round of THIS cartridge: no cut-open / 3D-render / group pictures, label must match."""
+    assert cp._mentions("File:5.45x39.jpg", "5.45×39mm") and not cp._mentions("File:7.62x39.jpg", "5.45×39mm")
+    for bad in ["File:5.56×45mm NATO cross section (3D model).png", "File:6.8 SPC + 223.jpg", "File:Five bullets.jpg",
+                "File:SR-3 rifle.jpg", "File:9x39 cutaway.jpg"]:
+        assert cp._MULTI.search(bad), bad
+    assert not cp._MULTI.search("File:7.62x39 - FMJ - 4.jpg")
+
+
+def test_proportion_check_rejects_wrong_shapes():
+    from PIL import Image, ImageDraw
+    dims = {"length": 56.0, "rim_dia": 11.33, "base": 11.33}
+    rod = Image.new("RGB", (1000, 1000), "white")
+    ImageDraw.Draw(rod).rectangle((100, 400, 900, 600), fill=(180, 90, 40))  # 4:1, a cartridge here is ~4.9:1 -> ok-ish
+    sq = Image.new("RGB", (1000, 1000), "white")
+    ImageDraw.Draw(sq).rectangle((300, 300, 700, 700), fill=(180, 90, 40))
+    with mock.patch("agents.evolution_poster._cutout", lambda img, with_box=False: img.convert("RGBA").crop(img.convert("L").point(lambda v: 255 if v < 250 else 0).getbbox())):
+        assert cp.normalize_cutout(sq, dims) is None, "a square blob is not a cartridge"

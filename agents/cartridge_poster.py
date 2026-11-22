@@ -94,6 +94,166 @@ def cartridge_facts(titles: List[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+# ------------------------------------------------------------------ real photos (free licence) / AI fallback
+# Owner's choice: a free-licensed photo of each cartridge where one exists, otherwise an AI image; the
+# to-scale drawing stays as the last resort. A picture is only used when it is ONE cartridge whose length
+# to width ratio matches its real dimensions (+-12 %), so group shots, rifles, boxes and wrong rounds are
+# rejected; it is then turned tip-right and scaled to the cartridge's real length.
+RATIO_TOL = 0.12
+_MULTI = re.compile(r"\+|\bvs\.?\b|comparison|\band\b|bullets|cartridges|rounds|lineup|family|box|magazine|rifle|"
+                    r"carbine\b(?! ball)|headstamp|reload|primer|case only|projectile|"
+                    r"cross.?section|section(?:ed)?\b|cutaway|cut.?away|\b3d\b|render|diagram|drawing|schematic|\.svg", re.I)
+_CLIP_YES = ["a photo of a single complete rifle cartridge, brass case with a bullet, side view"]
+_CLIP_NO = ["a cut-open sectioned cartridge showing gunpowder inside", "a 3D render cross section of ammunition",
+            "several bullets or cartridges side by side", "a rifle or gun", "a metal pipe or rod", "a pen or lipstick"]
+
+
+def looks_like_cartridge(cut: Image.Image, work: Path) -> bool:
+    """Image check on the cutout: one complete round, not a sectioned / rendered / group picture."""
+    try:
+        from agents.image_generator import ImageGeneratorAgent
+        bg = Image.new("RGB", (cut.width + 40, cut.height + 40), (255, 255, 255))
+        bg.paste(cut, (20, 20), cut)
+        f = work / "_clip_check.png"
+        bg.save(f)
+        share = ImageGeneratorAgent._clip_share(f, _CLIP_YES, _CLIP_NO)
+        return share is None or share >= 0.5  # no CLIP installed: the proportion check alone decides
+    except Exception:
+        return True
+
+
+def _key_tokens(name: str) -> List[str]:
+    """What a photo's title/description must mention to be THIS cartridge: its numbers ('5.45', '39')."""
+    nums = re.findall(r"\d+(?:\.\d+)?", name)
+    return [n.lstrip("0") if n.startswith("0.") else n for n in nums]
+
+
+def _mentions(text: str, name: str) -> bool:
+    t = re.sub(r"[x×X]", "×", (text or "").replace("_", " "))
+    toks = _key_tokens(name)
+    return bool(toks) and all(re.search(rf"(?<![\d.]){re.escape(tok)}(?!\d)", t) for tok in toks)
+
+
+def _imageinfo(files: List[str]) -> List[Dict[str, Any]]:
+    """URL + licence + author for File: titles (via en.wikipedia, which serves Commons files)."""
+    from agents import equipment_catalog as ec
+    out = []
+    for i in range(0, len(files), 20):
+        d = ec._get({"action": "query", "titles": "|".join(files[i:i + 20]), "prop": "imageinfo",
+                     "iiprop": "url|extmetadata|size", "iiurlwidth": 900, "formatversion": 2}) or {}
+        for pg in d.get("query", {}).get("pages", []):
+            ii = (pg.get("imageinfo") or [{}])[0]
+            meta = ii.get("extmetadata") or {}
+            lic = (meta.get("LicenseShortName") or {}).get("value", "")
+            if not ii.get("thumburl") or not re.search(r"public domain|cc0|cc[- ]by|pd", lic, re.I):
+                continue  # only free licences
+            out.append({"title": pg["title"], "url": ii["thumburl"], "page_url": ii.get("descriptionurl", ""),
+                        "description": re.sub(r"<[^>]+>", " ", (meta.get("ImageDescription") or {}).get("value", ""))[:300],
+                        "license": lic, "author": re.sub(r"<[^>]+>", "", (meta.get("Artist") or {}).get("value", "")).strip()[:80] or "Unknown",
+                        "short_url": f"https://commons.wikimedia.org/?curid={pg['pageid']}" if pg.get("pageid") and pg.get("imagerepository") == "shared" else ii.get("descriptionurl", "")})
+    return out
+
+
+def photo_candidates(name: str, article: str) -> List[Dict[str, Any]]:
+    from agents import equipment_catalog as ec
+    cands: List[Dict[str, Any]] = []
+    d = ec._get({"action": "query", "titles": article, "prop": "images", "imlimit": 50, "redirects": 1, "formatversion": 2}) or {}
+    files = [i["title"] for pg in d.get("query", {}).get("pages", []) for i in pg.get("images", [])
+             if re.search(r"\.(jpe?g|png)$", i["title"], re.I)]
+    cands += _imageinfo(files)
+    try:
+        from agents.image_generator import ImageGeneratorAgent
+        cands += [dict(c, page_url=c.get("page_url"), short_url=c.get("page_url"))
+                  for c in ImageGeneratorAgent()._search_openverse_images(f"{name} cartridge", limit=15)]
+    except Exception as e:
+        print(f"[Cartridges] Openverse skipped for {name}: {e}")
+    # this cartridge only, one round per picture
+    return [c for c in cands if _mentions(f"{c['title']} {c.get('description', '')}", name)
+            and not _MULTI.search(re.sub(r"^(File:|Openverse:)", "", c["title"]))]
+
+
+def _download(url: str) -> Optional[Image.Image]:
+    import io
+    import requests
+    from agents import equipment_catalog as ec
+    try:
+        r = requests.get(url, headers=ec.HEADERS, timeout=30)
+        if r.status_code == 200 and len(r.content) > 5000:
+            return Image.open(io.BytesIO(r.content)).convert("RGB")
+    except Exception:
+        pass
+    return None
+
+
+def normalize_cutout(img: Image.Image, dims: Dict[str, float]) -> Optional[Image.Image]:
+    """One cartridge from the picture, turned horizontal with the bullet tip on the right, or None when the
+    object isn't a single round of these proportions."""
+    import numpy as np
+    from agents import evolution_poster as ev
+    cut = ev._cutout(img)
+    if cut is None:
+        return None
+    a = np.asarray(cut.split()[3]) > 40
+    ys, xs = np.nonzero(a)
+    if len(xs) < 400:
+        return None
+    cov = np.cov(np.vstack([xs, ys]).astype(float))
+    vals, vecs = np.linalg.eigh(cov)
+    major = vecs[:, int(np.argmax(vals))]
+    angle = float(np.degrees(np.arctan2(major[1], major[0])))
+    rot = cut.rotate(angle, resample=Image.Resampling.BICUBIC, expand=True)
+    box = rot.split()[3].point(lambda v: 255 if v > 40 else 0).getbbox()
+    if not box:
+        return None
+    rot = rot.crop(box)
+    real = dims["length"] / max(dims["rim_dia"], dims["base"])
+    got = rot.width / max(1, rot.height)
+    if abs(got - real) / real > RATIO_TOL:
+        return None  # not a single, complete, side-on round of this cartridge
+    al = np.asarray(rot.split()[3]) > 40
+    span = max(3, rot.width // 8)
+    left, right = al[:, :span].sum(axis=0).mean(), al[:, -span:].sum(axis=0).mean()
+    if left < right:  # the narrower end is the bullet tip: put it on the right
+        rot = rot.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    return rot
+
+
+def ai_cartridge(name: str, dims: Dict[str, float], work: Path) -> Optional[Image.Image]:
+    """AI image of the round (only when no free photo passes), held to the same proportion check."""
+    try:
+        from agents.image_generator import ImageGeneratorAgent
+        dest = work / f"ai_{re.sub(r'[^a-z0-9]+', '_', name.lower())}.png"
+        prompt = (f"studio product photo of a single {name} rifle cartridge, brass case and copper bullet, "
+                  f"exact side view, lying horizontally, bullet pointing right, isolated on a plain white background, "
+                  f"sharp focus, no text, no other objects")
+        gen = ImageGeneratorAgent()
+        for attempt in range(3):  # the free engine often draws rods / several rounds: up to 3 tries
+            ok, _u, _e, _q = gen._generate_with_flux1(prompt, dest)
+            if ok and dest.exists():
+                cut = normalize_cutout(Image.open(dest).convert("RGB"), dims)
+                if cut is not None and looks_like_cartridge(cut, work):
+                    return cut
+            print(f"[Cartridges] AI try {attempt + 1} for {name}: not a correct single round, rejected")
+    except Exception as e:
+        print(f"[Cartridges] AI image skipped for {name}: {e}")
+    return None
+
+
+def picture_for(row: Dict[str, Any], work: Path, use_ai: bool = True) -> Dict[str, Any]:
+    """{'img': RGBA or None, 'source': 'photo'|'ai'|'drawn', 'credit': {...} or None}"""
+    for c in photo_candidates(row["name"], row["article"])[:8]:
+        img = _download(c["url"])
+        cut = normalize_cutout(img, row["dims"]) if img is not None else None
+        if cut is not None and looks_like_cartridge(cut, work):
+            return {"img": cut, "source": "photo", "credit": {"model": row["name"], "file": c["title"], "author": c["author"],
+                                                              "license": c["license"], "url": c["page_url"], "short_url": c.get("short_url") or c["page_url"]}}
+    if use_ai:
+        cut = ai_cartridge(row["name"], row["dims"], work)
+        if cut is not None:
+            return {"img": cut, "source": "ai", "credit": None}
+    return {"img": None, "source": "drawn", "credit": None}
+
+
 # ------------------------------------------------------------------ drawing
 
 def _font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
@@ -189,7 +349,12 @@ def render(rows: List[Dict[str, Any]], out_path: Path, title: str, subtitle: str
     name_f, meta_f = _font(34), _font(24, bold=False)
     for i, r in enumerate(rows):
         cy = top + row_h * (i + 0.5)
-        c = draw_cartridge(r["dims"], s)
+        pic = r.get("picture")
+        if pic is not None:
+            tw = max(20, int(r["dims"]["length"] * s))  # real length on the common scale
+            c = pic.resize((tw, max(8, int(pic.height * tw / pic.width))), Image.Resampling.LANCZOS)
+        else:
+            c = draw_cartridge(r["dims"], s)
         shadow = Image.new("RGBA", c.size, (0, 0, 0, 0))
         shadow.putalpha(c.split()[3].point(lambda a: int(a * 0.28)))
         shadow = shadow.filter(ImageFilter.GaussianBlur(4))
@@ -200,7 +365,15 @@ def render(rows: List[Dict[str, Any]], out_path: Path, title: str, subtitle: str
         dr.text((tx, cy - 30), r["name"], font=name_f, fill=(18, 18, 18))
         meta = f"Ø {r['dims']['bullet']:.2f} mm · {r['dims']['length']:.1f} mm long · {r['rifles']} rifle{'s' if r['rifles'] != 1 else ''}"
         dr.text((tx, cy + 10), meta, font=meta_f, fill=(85, 85, 85))
-    foot = "Drawn to scale from Wikipedia dimensions · rifles = production assault rifles in Wikipedia's list"
+    srcs = Counter(r.get("source", "drawn") for r in rows)
+    parts = []
+    if srcs.get("photo"):
+        parts.append(f"{srcs['photo']} free-licence photos (credits in description)")
+    if srcs.get("ai"):
+        parts.append(f"{srcs['ai']} AI images")
+    if srcs.get("drawn"):
+        parts.append(f"{srcs['drawn']} drawn from Wikipedia dimensions")
+    foot = "All to scale · " + " · ".join(parts)
     ff = _font(22, bold=False)
     w = dr.textlength(foot, font=ff)
     dr.text(((W - w) / 2, H - 80), foot, font=ff, fill=(110, 110, 110))
@@ -210,7 +383,8 @@ def render(rows: List[Dict[str, Any]], out_path: Path, title: str, subtitle: str
     return {"path": str(out_path), "rows": n}
 
 
-def build(out_path: Path, title: str = "ASSAULT RIFLE CARTRIDGES\nOF THE WORLD") -> Dict[str, Any]:
+def build(out_path: Path, title: str = "ASSAULT RIFLE CARTRIDGES\nOF THE WORLD", photos: bool = True,
+          use_ai: bool = True) -> Dict[str, Any]:
     usage = cartridge_usage()
     if not usage:
         return {"error": "Couldn't read Wikipedia's List of assault rifles"}
@@ -228,12 +402,25 @@ def build(out_path: Path, title: str = "ASSAULT RIFLE CARTRIDGES\nOF THE WORLD")
     if len(rows) < 5:
         return {"error": f"Only {len(rows)} cartridges with verified dimensions", "skipped": skipped}
     rows.sort(key=lambda r: -r["dims"]["length"])
-    subtitle = f"{len(rows)} cartridges · largest to smallest · drawn to scale"
+    work = Path(out_path).parent / "cartridge_pictures"
+    work.mkdir(parents=True, exist_ok=True)
+    credits = []
+    for r in rows:
+        if photos:
+            got = picture_for(r, work, use_ai=use_ai)
+            r["picture"], r["source"] = got["img"], got["source"]
+            if got["credit"]:
+                credits.append(got["credit"])
+        else:
+            r["picture"], r["source"] = None, "drawn"
+        print(f"[Cartridges] {r['name']}: {r['source']}")
+    subtitle = f"{len(rows)} cartridges · largest to smallest · to scale"
     res = render(rows, out_path, title, subtitle)
     items = [{"rank": i, "name": r["name"], "article": r["article"], "country": r["origin"], "year": r["year"],
               "bullets": [f"Overall length - {r['dims']['length']:.1f} mm", f"Bullet diameter - {r['dims']['bullet']:.2f} mm"],
-              "rifles": r["rifles"], "examples": r["examples"], "dims": r["dims"]} for i, r in enumerate(rows, 1)]
-    return {**res, "items": items, "skipped": skipped, "title": title.replace("\n", " ")}
+              "rifles": r["rifles"], "examples": r["examples"], "dims": r["dims"], "picture": r["source"]}
+             for i, r in enumerate(rows, 1)]
+    return {**res, "items": items, "skipped": skipped, "title": title.replace("\n", " "), "credits": credits}
 
 
 def verify_items(items: List[Dict[str, Any]]) -> List[str]:
