@@ -26,3 +26,6 @@ assets/audio/theme_pool/
 
 # Verified photo library (grows as charts are built; backed up nightly)
 assets/photo_library/
+
+# Official brand newsroom sitemap cache (agents/brand_media.py), rebuilt daily
+assets/data/brand_media_cache/

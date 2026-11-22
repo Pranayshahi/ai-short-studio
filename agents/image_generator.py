@@ -484,11 +484,13 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
                         f"Content check: image looks like '{content_check.get('best_label')}' "
                         f"(target score {content_check.get('score')}%)"
                     )
-            if ok and cand.get("official_brand"):
-                person = self._person_share(dest_path)
-                if person is not None and person >= self.PERSON_SHARE_LIMIT:
+            if ok and (cand.get("official_brand") or str(style).lower() == "car_edit"):
+                # Press pages and photo libraries also carry team, event and landscape shots:
+                # a car video's photo must actually show the car
+                car = self._clip_share(dest_path, self._CAR_YES, self._CAR_NO)
+                if car is not None and car < 0.5:
                     ok = False
-                    quality_info["reason"] = f"Official press photo shows people ({person:.0%}), not the car"
+                    quality_info["reason"] = f"Photo doesn't show the car (car {car:.0%}): people/landscape shot"
             if ok:
                 dup_of = self._duplicate_of(dest_path, accepted_real_images)
                 if dup_of:
@@ -655,6 +657,12 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
     # Calibrated 2026-11-15 on C25 AI images: object-only shots scored 0.12-0.19, images with a
     # soldier/person 0.58-0.89
     PERSON_SHARE_LIMIT = 0.40
+    # Car videos: CLIP labels for "the car is the subject" vs press-page extras (tested on BMW newsroom photos:
+    # car shots 0.83-0.98, team/landscape shots 0.00-0.10)
+    _CAR_YES = ["a photo of a car", "a car driving on a road", "a close-up of a car headlight or wheel",
+                "the interior dashboard of a car", "an electric car at a charging station"]
+    _CAR_NO = ["a group of people posing for a photo", "people standing outdoors", "a landscape with no car",
+               "a map or infographic", "a building or monument"]
     _PERSON_NO = ["a photo of a rifle with nobody in the picture", "a product photo of a gun lying on a surface",
                   "a photo of a firearm on a table", "a photo of a vehicle with nobody around", "a photo of an object"]
     _PERSON_YES = ["a photo of a person holding a rifle", "a photo of a soldier", "a photo of a woman",
