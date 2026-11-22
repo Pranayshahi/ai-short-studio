@@ -383,6 +383,9 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
                 rec["scene_number"] = s_num
                 rec["image_path"] = str(scene_dest)
                 scene_visual_records.append(rec)
+        elif str(effective_style).lower() == "car_edit" and (car_records := self._assign_car_photos(
+                scenes, verified_candidates, scenes_dir, accepted_real_images, clean_topic)):
+            scene_visual_records.extend(car_records)
         else:
             for idx, sc in enumerate(scenes):
                 s_num = sc.get("scene_number", idx + 1)
@@ -436,6 +439,84 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
             "image_paths": image_paths,
         }
 
+    def _assign_car_photos(
+        self,
+        scenes: List[Dict[str, Any]],
+        candidates: List[Dict[str, Any]],
+        scenes_dir: Path,
+        accepted_real_images: List[str],
+        clean_topic: str,
+    ) -> List[Dict[str, Any]]:
+        """Car videos: every candidate photo is downloaded once and ranked (car_photo_rank); each scene gets
+        the best unused photo of the shot it asks for, framed on the car. When the real photos run out a
+        used one is re-framed (different crop) - never an AI car, which can't match the real model.
+        [] when no usable real photo exists (the caller then uses the normal per-scene search)."""
+        from agents import car_photo_rank as cpr
+
+        def download(url: str, path: Path) -> bool:
+            try:
+                r = requests.get(url, headers=self.HEADERS, timeout=30)
+                if r.status_code != 200 or len(r.content) < 8000:
+                    return False
+                path.write_bytes(r.content)
+                return True
+            except Exception:
+                return False
+
+        official = [c for c in candidates if c.get("official_brand")]
+        pool = official if len(official) >= 4 else candidates
+        ranked = cpr.rank(pool, scenes_dir / "_photo_pool", download)
+        if not ranked:
+            return []
+        print(f"[{self.AGENT_NAME}] 🏁 Car photos: {len(ranked)} ranked real photos for {len(scenes)} scenes")
+        used: set = set()
+        reuse: Dict[str, int] = {}
+        records: List[Dict[str, Any]] = []
+        for idx, sc in enumerate(scenes):
+            s_num = sc.get("scene_number", idx + 1)
+            dest = scenes_dir / f"scene_{s_num:02d}.png"
+            want = cpr.wanted_shots(sc)
+            cand = cpr.pick(ranked, want, used)
+            variant = 0
+            if cand is None:
+                # all photos used: re-frame the best matching one that was reused least
+                full_wanted = bool(want) and want[0] not in cpr.CLOSEUPS
+                order = sorted(ranked, key=lambda c: (
+                    1 if full_wanted and c["analysis"]["shot"] in cpr.CLOSEUPS else 0,
+                    reuse.get(c["url"], 0), 0 if c["analysis"]["shot"] in want else 1, -c["analysis"]["score"]))
+                cand = order[0]
+                reuse[cand["url"]] = reuse.get(cand["url"], 0) + 1
+                variant = reuse[cand["url"]]
+            used.add(cand["url"])
+            cpr.render(cand["analysis"], dest, variant=variant)
+            accepted_real_images.append(str(dest))
+            a = cand["analysis"]
+            print(f"   ✓ Scene {s_num}: {a['shot']} photo (score {a['score']}, wanted {want or 'any'})"
+                  + (f", re-framed #{variant}" if variant else "") + f" | {cand['url'].rsplit('/', 1)[-1][:40]}")
+            src = cand.get("source_verification") or {}
+            records.append({
+                "scene_number": s_num,
+                "image_path": str(dest),
+                "source": "web_free",
+                "source_url": cand["url"],
+                "page_url": cand.get("page_url") or cand["url"],
+                "source_title": cand.get("title", ""),
+                "source_domain": src.get("domain") or urllib.parse.urlparse(cand["url"]).netloc,
+                "source_provider": src.get("provider_name") or cand.get("author", ""),
+                "license": cand.get("license", ""),
+                "author": cand.get("author", ""),
+                "source_verified": True,
+                "topic_matched": True,
+                "topic_match_score": cand.get("topic_match_score", 90),
+                "topic_match_reason": cand.get("topic_match_reason", "Official photo of the model"),
+                "content_verified": True,
+                "visual_quality": {"car_photo_rank": {k: a[k] for k in ("shot", "score", "car", "fill", "bad", "text")},
+                                   "reframed": variant},
+                "attempts_taken": 1,
+                "prompt": sc.get("visual_prompt", f"Verified photo of {clean_topic}"),
+            })
+        return records
+
     def _acquire_verified_scene_image(
         self,
         scene: Dict[str, Any],
@@ -471,6 +552,11 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
                 break
             c_url = cand.get("url")
             if not c_url or c_url in used_urls:
+                continue
+            # Rejected for an earlier scene (wrong content, people, duplicate...): don't spend this scene's
+            # attempts on it again (the BMW i3 run retried 4 rejected photos 9-13 times -> AI fallback)
+            if any(e.get("rejected_url") == c_url and e.get("stage") == "pixel_quality_inspection"
+                   for e in change_image_events):
                 continue
 
             attempts += 1
@@ -657,6 +743,8 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
     # Calibrated 2026-11-15 on C25 AI images: object-only shots scored 0.12-0.19, images with a
     # soldier/person 0.58-0.89
     PERSON_SHARE_LIMIT = 0.40
+    # Car videos: with at least this many official newsroom photos, no other photo source is mixed in
+    OFFICIAL_ONLY_MIN = 8
     # Car videos: CLIP labels for "the car is the subject" vs press-page extras (tested on BMW newsroom photos:
     # car shots 0.83-0.98, team/landscape shots 0.00-0.10)
     _CAR_YES = ["a photo of a car", "a car driving on a road", "a close-up of a car headlight or wheel",
@@ -766,12 +854,18 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
         if car_mode:
             try:
                 from agents import brand_media
-                for cand in brand_media.search_official_images(clean_topic, limit=max(limit, 20)):
+                for cand in brand_media.search_official_images(clean_topic, limit=max(limit, 40)):
                     if cand["url"] not in seen_urls:
                         seen_urls.add(cand["url"])
                         results.append(cand)
             except Exception as e:
                 print(f"[{self.AGENT_NAME}] Official brand photos skipped: {e}")
+            # Enough official photos: use only those. Model names get reused across generations (the
+            # 2013 BMW i3 hatchback vs the 2026 Neue Klasse i3 sedan), and Flickr/Commons photos tagged
+            # "BMW i3" were filling both i3 videos with the old car.
+            if len(results) >= self.OFFICIAL_ONLY_MIN:
+                print(f"[{self.AGENT_NAME}] {len(results)} official brand photos: other sources not used")
+                return results
 
         topic_lower = f"{clean_topic} {' '.join(keywords)}".lower()
         core = subject_core(clean_topic)

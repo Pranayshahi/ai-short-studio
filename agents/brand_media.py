@@ -102,6 +102,7 @@ BRAND_SITES: Dict[str, List[str]] = {
 _STOP = {"the", "new", "all", "and", "car", "cars", "edit", "with", "for", "series", "edition"}
 _IMG_RE = re.compile(r"""https?://[^\s"'<>()]+?\.(?:jpe?g|webp|png)(?:\?[^\s"'<>()]*)?""", re.I)
 _BAD_IMG = re.compile(r"(logo|icon|favicon|sprite|avatar|placeholder|banner-ad|social|share|flag|qr[-_]?code|"
+                      r"x-post|facebook|linkedin|twitter|instagram|youtube|whatsapp|"
                       r"signature|portrait|headshot|\bteam\b|thumb(?:nail)?s?/)", re.I)
 
 
@@ -194,7 +195,18 @@ def _slug_has(url: str, tok: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){re.escape(tok)}(?![a-z0-9])", path) is not None
 
 
-def find_model_pages(car_name: str, max_pages: int = 6) -> List[str]:
+_FOREIGN = re.compile(r"/(?!en(?:-[a-z]{2})?/)[a-z]{2}(?:-[a-z]{2})?/")
+_PRESS_KIT = re.compile(r"(?<![a-z])(new|premiere|launch|unveil|reveal|design|media|photo|imagery|gallery|"
+                        r"images|assets|press-kit|world-premiere)(?![a-z])")
+_NOT_PRODUCT = re.compile(r"(?<![a-z])(sales|quarter|quarterly|results|plant|production|statement|conference|"
+                          r"marathon|award|awards|investing|investment|supply|partnership|keynote|streaming|"
+                          r"satellite|employees|financial)(?![a-z])")
+
+
+def find_model_pages(car_name: str, max_pages: int = 10) -> List[str]:
+    """Newsroom pages about this model, best first: the model's launch press kit / photo pages beat
+    trim-specific stories, English beats translations of the same story, product pages beat
+    business news (sales, plants, awards) that only mention the car."""
     brand, sites = brand_sites(car_name)
     toks = model_tokens(car_name, brand)
     if not brand or not toks:
@@ -205,18 +217,31 @@ def find_model_pages(car_name: str, max_pages: int = 6) -> List[str]:
         for url, lastmod in _sitemap_urls(site):
             if not _slug_has(url, key):
                 continue
-            score = sum(1 for t in toks if _slug_has(url, t)) * 10
+            path = urllib.parse.urlparse(url).path.lower()
+            score = 20 + 3 * sum(1 for t in toks[1:] if _slug_has(url, t))  # trim words: a small bonus
             if _slug_has(url, brand.split()[0]):
                 score += 3
-            if re.search(r"/(en|global|com|int|en-[a-z]{2})(/|$)", url.lower()) or not re.search(r"/[a-z]{2}(-[a-z]{2})?/", url.lower()):
-                score += 2  # English / language-neutral pages
+            score += 6 * min(2, len(_PRESS_KIT.findall(path)))
+            if _NOT_PRODUCT.search(path):
+                score -= 12
+            if _FOREIGN.search(path):
+                score -= 15  # a translation of an English page we already rank
             scored.append((score, lastmod, url))
         if scored:
             break  # first official site that has the model wins
+    # Model names get reused across generations (BMW i3 2013 hatchback / 2026 Neue Klasse sedan): keep only
+    # pages from the current generation's era - within 2 years of the newest page about the model
+    dated = [lm for _, lm, _ in scored if re.match(r"\d{4}-\d{2}", lm or "")]
+    if dated:
+        newest = max(dated)
+        cutoff = f"{int(newest[:4]) - 2}{newest[4:]}"
+        scored = [x for x in scored if not re.match(r"\d{4}-\d{2}", x[1] or "") or x[1] >= cutoff]
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
     pages, seen = [], set()
     for _, _, u in scored:
-        norm = re.sub(r"/[a-z]{2}(-[a-z]{2})?/", "/", u.lower())
+        # the same story per region/language: /global/x/, /emea/en-ie/x-en-ie/, /apac/en-au/x/ -> "x"
+        slug = urllib.parse.urlparse(u).path.lower().rstrip("/").rsplit("/", 1)[-1]
+        norm = re.sub(r"-(en|de|fr|es|it|nl|pt|ja|zh|ko)(-[a-z]{2})?$", "", re.sub(r"\.html?$", "", slug))
         if norm in seen:
             continue
         seen.add(norm)
@@ -271,27 +296,30 @@ def _page_images(page_url: str, html_text: str) -> Tuple[str, List[Dict[str, str
     return page_title, imgs
 
 
-def search_official_images(car_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+def search_official_images(car_name: str, limit: int = 40) -> List[Dict[str, Any]]:
     """Official press photos of this car, in ImageGeneratorAgent candidate format ([] if none found)."""
     t0 = time.time()
     brand, sites = brand_sites(car_name)
     if not brand:
         return []
     pages = find_model_pages(car_name)
-    results: List[Dict[str, Any]] = []
+    # Collect each page's photos, then take them in turn (page 1 photo 1, page 2 photo 1, ...): one story's
+    # gallery (e.g. a road trip) otherwise fills every scene and the launch kit's studio/interior shots are lost
+    per_page: List[List[Dict[str, Any]]] = []
     seen = set()
     for page in pages:
-        if len(results) >= limit or time.time() - t0 > 90:
+        if time.time() - t0 > 90:
             break
         text = _get(page)
         if not text:
             continue
         page_title, imgs = _page_images(page, text)
+        rows = []
         for im in imgs:
             if im["url"] in seen:
                 continue
             seen.add(im["url"])
-            results.append({
+            rows.append({
                 "title": f"{page_title} {im['alt']}".strip()[:200] or car_name,
                 "url": im["url"],
                 "page_url": page,
@@ -304,11 +332,30 @@ def search_official_images(car_name: str, limit: int = 20) -> List[Dict[str, Any
                 "mime": "image/jpeg",
                 "official_brand": True,
             })
-            if len(results) >= limit:
-                break
+        if rows:
+            per_page.append(rows)
+    results: List[Dict[str, Any]] = []
+    i = 0
+    while len(results) < limit and any(i < len(r) for r in per_page):
+        for rows in per_page:
+            if i < len(rows) and len(results) < limit:
+                results.append(rows[i])
+        i += 1
     print(f"[{AGENT}] {car_name}: {len(results)} official {brand.upper()} photos from {len(pages)} newsroom page(s) "
           f"in {time.time() - t0:.1f}s")
     return results
+
+
+def official_text(car_name: str, max_pages: int = 3) -> str:
+    """Plain text of the car maker's own press pages about this model (for the fact checker): the
+    manufacturer's figures (0-100 time, charging power...) count as a source alongside Wikipedia."""
+    out = []
+    for page in find_model_pages(car_name, max_pages=max_pages):
+        raw = _get(page) or ""
+        raw = re.sub(r"(?is)<(script|style|noscript|svg)\b.*?</\1>", " ", raw)
+        txt = html.unescape(re.sub(r"(?s)<[^>]+>", " ", raw))
+        out.append(re.sub(r"\s+", " ", txt).strip()[:60000])
+    return "\n".join(out)
 
 
 if __name__ == "__main__":

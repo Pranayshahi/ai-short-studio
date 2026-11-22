@@ -604,14 +604,20 @@ class CarEditAgent:
                 if idx < len(scenes):
                     sc_text = str(scenes[idx].get("on_screen_text") or "").strip().upper()
                 if sc_text and sc_text not in (headline_main, subtitle_spec):
+                    # Large, readable caption (viral-strategy brief): 72 px, shrunk only as far as a long
+                    # line needs to fit the frame width (was a fixed 34 px - unreadable on a phone)
+                    size, cap_font = 72, cls._load_font(72)
+                    while size > 40 and draw.textbbox((0, 0), sc_text, font=cap_font, stroke_width=6)[2] > w - 90:
+                        size -= 4
+                        cap_font = cls._load_font(size)
                     draw.text(
-                        (w // 2, h - 220),
+                        (w // 2, h - 300),
                         sc_text,
-                        font=font_scene_badge,
-                        fill=(255, 255, 255, 245),
+                        font=cap_font,
+                        fill=(255, 255, 255, 250),
                         anchor="mm",
-                        stroke_width=4,
-                        stroke_fill=(0, 0, 0, 240),
+                        stroke_width=6,
+                        stroke_fill=(0, 0, 0, 245),
                     )
 
                 overlay.save(overlay_path, "PNG")

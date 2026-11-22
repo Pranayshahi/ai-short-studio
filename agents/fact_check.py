@@ -236,6 +236,10 @@ def filter_script(script_data: Dict[str, Any], research: Dict[str, Any], subject
     if not scenes:
         return []
     text, bad_sources = corpus(research)
+    if any(sc.get("car_angle") for sc in scenes) and subject:
+        # Car edit: the car's own sources (Wikipedia + the maker's newsroom), as check_project uses -
+        # without them the verified spec line (e.g. "0-100 KM/H IN 4.7 S") was stripped before rendering
+        text = text + "\n" + car_text(subject)
     pool = _corpus_numbers(text)
     removed: List[str] = [f"source dropped (off-topic): {b}" for b in bad_sources]
     for key in ("narration", "voiceover_text"):
@@ -387,6 +391,12 @@ def car_text(car_name: str) -> str:
     for h in d.get("query", {}).get("search", [])[:3]:
         if brand and brand in h["title"].lower():
             texts.append(source_text("https://en.wikipedia.org/wiki/" + urllib.parse.quote(h["title"].replace(" ", "_")))[1])
+    # The car maker's own newsroom pages about this model are a source too (owner's rule: official site first)
+    try:
+        from agents import brand_media
+        texts.append(brand_media.official_text(car_name))
+    except Exception as e:
+        print(f"[FactCheck] official brand pages skipped: {e}")
     return "\n".join(texts)
 
 

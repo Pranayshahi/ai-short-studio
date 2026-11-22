@@ -63,11 +63,49 @@ def power_from_text(text: str) -> str:
     for m in re.finditer(r"(\d{1,2},\d{3}|\d{3,4})\s*(PS|hp|bhp|kW|cv)\b", t, re.I):
         val = int(m.group(1).replace(",", ""))
         unit = m.group(2).lower()
+        if unit == "kw" and _CHARGING.search(t[max(0, m.start() - 60):m.end() + 40]):
+            continue  # "DC fast charging up to 400 kW" is the charger, not the motor (was shown as 536 HP)
         if unit == "kw":
             val, unit = round(val * 1.341), "hp"
         if 150 <= val <= 2500:
             return f"{val:,} {'PS' if unit in ('ps', 'cv') else 'HP'}"
     return ""
+
+
+_CHARGING = re.compile(r"charg|\bDC\b|\bAC\b|wallbox|plug", re.I)
+
+
+def power_for_variant(field: str, name: str) -> str:
+    """Infobox power for the requested version. Fields like '335 hp (i3 40L) | 463 hp (i3 50 xDrive) |
+    603 hp (i3 60 xDrive M Performance)' list every trim: pick the one the car name names; with no trim
+    named, the top output as 'UP TO 603 HP' (never one trim's number presented as the whole range)."""
+    entries = []
+    for part in re.split(r"\s*\|\s*|<br\s*/?>|\n", field or ""):
+        pw = power_from_text(part)
+        if pw:
+            # hybrids list engine / motor / total: the total is the car's output
+            # ("Total output: 1001 hp", "Combined: 1200 PS"; not "Electric motor (combined): 187 hp")
+            if re.match(r"\s*(?:\{\{ubl\s*)?(total|combined|system)\b", part, re.I):
+                return pw
+            label = " ".join(re.findall(r"\(([^)]*)\)", part))
+            entries.append((pw, label))
+    if len(entries) <= 1 or sum(1 for _, lb in entries if lb) < 2:
+        return entries[0][0] if entries else ""  # not a list of trims: first stated output (as before)
+    want = set(re.findall(r"[a-z0-9]+", (name or "").lower()))
+    scored = []
+    for pw, label in entries:
+        toks = set(re.findall(r"[a-z0-9]+", label.lower()))
+        # trim words beyond the shared model name decide it ("50", "xdrive"); a different trim number loses
+        extra = toks - want
+        hit = len(toks & want) - 2 * len({t for t in extra if t.isdigit()})
+        scored.append((hit, pw, label))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best = scored[0]
+    named = [t for t in want if t.isdigit() or t in ("xdrive", "quattro", "4matic", "awd", "rwd")]
+    if best[0] > 0 and named and (len(scored) == 1 or best[0] > scored[1][0] or best[1] == scored[1][1]):
+        return best[1]
+    top = max(entries, key=lambda e: int(re.sub(r"\D", "", e[0]) or 0))[0]
+    return f"UP TO {top}"
 
 
 def lookup_car(name: str) -> Optional[Dict[str, str]]:
@@ -113,7 +151,9 @@ def _lookup_wikipedia(name: str) -> Optional[Dict[str, str]]:
         body = ec._clean(re.sub(r"\{\{\s*Infobox.*?\n\}\}", "", wt, flags=re.S | re.I))
         hybrid = bool(re.search(r"\bhybrid\b", f"{fb.get('engine', '')} {fb.get('electric_motor', '')} {body[:1500]}", re.I))
         engine = compact_engine(ec._clean(fb.get("engine", "")), hybrid)
-        power = power_from_text(ec._clean(fb.get("power", "") or fb.get("max_power", ""))) or power_from_text(body[:3000])
+        pfield = ec._clean(fb.get("power", "") or fb.get("max_power", "") or fb.get("powerout", "")
+                           or fb.get("power_output", ""))
+        power = power_for_variant(pfield, name) or power_from_text(body[:3000])
         parts = [p for p in (engine, power) if p]
         if parts:
             return {"spec": " · ".join(parts), "engine": engine, "power": power, "source": f"Wikipedia: {pages[0]['title']}"}
