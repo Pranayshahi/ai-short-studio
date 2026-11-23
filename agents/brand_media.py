@@ -211,14 +211,16 @@ def find_model_pages(car_name: str, max_pages: int = 10) -> List[str]:
     toks = model_tokens(car_name, brand)
     if not brand or not toks:
         return []
-    key = toks[0]  # the model name/number right after the brand (i3, 911, revuelto, f80 ...)
+    # The model designator: the word with a number (i3, 911, f80) beats a platform/series name
+    # ("BMW Neue Klasse i3" keyed on "neue" and found only generic Neue Klasse pages); else the first word
+    key = next((t for t in toks if re.search(r"\d", t)), toks[0])
     scored: List[Tuple[int, str, str]] = []
     for site in sites:
         for url, lastmod in _sitemap_urls(site):
             if not _slug_has(url, key):
                 continue
             path = urllib.parse.urlparse(url).path.lower()
-            score = 20 + 3 * sum(1 for t in toks[1:] if _slug_has(url, t))  # trim words: a small bonus
+            score = 20 + 3 * sum(1 for t in toks if t != key and _slug_has(url, t))  # other words: small bonus
             if _slug_has(url, brand.split()[0]):
                 score += 3
             score += 6 * min(2, len(_PRESS_KIT.findall(path)))
@@ -346,7 +348,7 @@ def search_official_images(car_name: str, limit: int = 40) -> List[Dict[str, Any
     return results
 
 
-def official_text(car_name: str, max_pages: int = 3) -> str:
+def official_text(car_name: str, max_pages: int = 8) -> str:
     """Plain text of the car maker's own press pages about this model (for the fact checker): the
     manufacturer's figures (0-100 time, charging power...) count as a source alongside Wikipedia."""
     out = []
