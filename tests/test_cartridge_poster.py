@@ -76,3 +76,13 @@ def test_commons_search_avoids_blocked_host():
     assert "api.wikimedia.org/core/v1/commons/search/page" in src and "en.wikipedia.org/w/api.php" in src
     assert "commons.wikimedia.org/w/api.php" not in inspect.getsource(ImageGeneratorAgent)
     assert "api.wikimedia.org/core/v1/commons/search/page" in inspect.getsource(cp.commons_search)
+
+
+def test_blank_and_tiny_photos_rejected():
+    assert cp._MULTI.search("File:Blank cartridge 7.62 x 51mm.jpg") and cp._MULTI.search("File:5.56 dummy round.jpg")
+    from PIL import Image, ImageDraw
+    small = Image.new("RGB", (240, 160), "white")
+    ImageDraw.Draw(small).rectangle((10, 70, 190, 90), fill=(180, 90, 40))  # right shape, but only 180 px long
+    dims = {"length": 57.4, "rim_dia": 9.6, "base": 9.58}
+    with mock.patch("agents.evolution_poster._cutout", lambda img, with_box=False: img.convert("RGBA").crop(img.convert("L").point(lambda v: 255 if v < 250 else 0).getbbox())):
+        assert cp.normalize_cutout(small, dims) is None

@@ -39,3 +39,9 @@ def test_bare_numbers_need_the_same_word():
            "content": "It is available in 6 variants and 12 colours with 7 seats."}]
     got = ws.corroborated_sentences(rs)
     assert not any("12 variants" in g for g in got), got
+
+
+def test_official_means_government_or_maker():
+    assert ws.reliability("defence.in") == "web", "a private site named 'defence' is not official"
+    for d in ["af.mil", "mod.gov.in", "army.mod.uk", "toyotabharat.com", "press.bmwgroup.com", "northropgrumman.com"]:
+        assert ws.reliability(d) == "official", d

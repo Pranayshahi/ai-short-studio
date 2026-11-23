@@ -27,11 +27,14 @@ import config
 SKIP_DOMAINS = re.compile(r"(?:^|\.)(?:youtube\.com|youtu\.be|tiktok\.com|instagram\.com|facebook\.com|pinterest\.\w+|"
                           r"quora\.com|reddit\.com|x\.com|twitter\.com|linkedin\.com|threads\.net|scribd\.com|"
                           r"amazon\.\w+|ebay\.\w+|aliexpress\.com|fandom\.com)$", re.I)
-OFFICIAL = re.compile(r"\.(?:gov|mil)(?:\.\w\w)?$|(?:^|\.)(?:army|navy|af|defence|defense|mod)\.\w+$|"
+# official = government / military domains (mod.gov.in, af.mil, army.mod.uk) or the maker's own site;
+# a private site merely NAMED 'defence.in' is not official
+OFFICIAL = re.compile(r"\.(?:gov|mil)(?:\.\w\w)?$|\.(?:mod|gov|mil)\.\w\w$|"
                       r"(?:^|\.)(?:lockheedmartin|northropgrumman|boeing|raytheon|rtx|baesystems|rheinmetall|saab|"
                       r"thalesgroup|airbus|leonardo|kmweg|generaldynamics|gd|hanwha|elbitsystems|rafael|iai|"
                       r"bmw|bmwgroup|press\.bmwgroup|mercedes-benz|porsche|ferrari|lamborghini|mclaren|toyota|"
-                      r"mahindra|tatamotors|hyundai|kia|audi|volkswagen|ford|gm|tesla|bugatti|koenigsegg)\.\w+",
+                      r"mahindra|tatamotors|hyundai|kia|audi|volkswagen|ford|gm|tesla|bugatti|koenigsegg)"
+                      r"(?:bharat|india|usa|uk|global|group|media|newsroom|press)?\.\w+",  # toyotabharat.com, bmwgroup.com
                       re.I)
 REFERENCE = re.compile(r"(?:^|\.)(?:wikipedia\.org|britannica\.com|reuters\.com|apnews\.com|bbc\.\w+|"
                        r"janes\.com|defensenews\.com|armyrecognition\.com|militarytoday\.com|globalsecurity\.org|"

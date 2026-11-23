@@ -102,7 +102,9 @@ def cartridge_facts(titles: List[str]) -> Dict[str, Dict[str, Any]]:
 RATIO_TOL = 0.12
 _MULTI = re.compile(r"\+|\bvs\.?\b|comparison|\band\b|bullets|cartridges|rounds|lineup|family|box|magazine|rifle|"
                     r"carbine\b(?! ball)|headstamp|reload|primer|case only|projectile|"
-                    r"cross.?section|section(?:ed)?\b|cutaway|cut.?away|\b3d\b|render|diagram|drawing|schematic|\.svg", re.I)
+                    r"cross.?section|section(?:ed)?\b|cutaway|cut.?away|\b3d\b|render|diagram|drawing|schematic|\.svg|"
+                    r"\bblank|dummy|drill|inert|training|snap.?cap", re.I)  # blanks / dummies show no real bullet
+MIN_PHOTO_PX = 300  # the round must be at least this long in the photo: smaller ones look smeared when scaled
 _CLIP_YES = ["a photo of a single complete rifle cartridge, brass case with a bullet, side view"]
 _CLIP_NO = ["a cut-open sectioned cartridge showing gunpowder inside", "a 3D render cross section of ammunition",
             "several bullets or cartridges side by side", "a rifle or gun", "a metal pipe or rod", "a pen or lipstick"]
@@ -230,6 +232,8 @@ def normalize_cutout(img: Image.Image, dims: Dict[str, float]) -> Optional[Image
     if not box:
         return None
     rot = rot.crop(box)
+    if rot.width < MIN_PHOTO_PX:
+        return None  # a tiny catalogue picture: blurry at chart size
     real = dims["length"] / max(dims["rim_dia"], dims["base"])
     got = rot.width / max(1, rot.height)
     if abs(got - real) / real > RATIO_TOL:
