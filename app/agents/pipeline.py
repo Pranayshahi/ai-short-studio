@@ -393,6 +393,22 @@ class ShortsPipeline:
                         script_data["image_data"]["scenes"] = car_plan["scenes"]
                 project_record["car_edit_plan"] = car_plan
 
+            # Narrated LIST video (the user's own ranked list, e.g. from ChatGPT): one scene per verified item
+            list_data = None
+            if project_record.get("list_video_text") and style != "car_edit":
+                from agents import list_video
+                project_record["progress_step"] = "list-video: Verifying every listed item on Wikipedia..."
+                StorageManager.save_project(project_record)
+                list_data = list_video.resolve(project_record["list_video_text"])
+                if list_data.get("error"):
+                    raise RuntimeError(f"List video: {list_data['error']}")
+                title_txt = project_record.get("list_video_title") or list_data["title"]
+                script_data["scenes"] = list_video.plan_scenes(title_txt, list_data["items"], float(target_dur or 25.0))
+                script_data["title"] = f"{title_txt} 🔥 #Shorts"
+                if isinstance(script_data.get("image_data"), dict):
+                    script_data["image_data"]["scenes"] = script_data["scenes"]
+                project_record["list_video_skipped"] = list_data.get("skipped") or []
+
             # Facts: narration sentences that are off-topic or carry numbers not in the sources are removed
             # BEFORE the voice-over (owner's rule: correct data or nothing)
             if style != "music_only":
@@ -429,7 +445,12 @@ class ShortsPipeline:
             print(f"\n[Step 3/7] 🖼️ Running 'image-generator' agent using image_data from content-analyser...")
             project_record["progress_step"] = "image-generator: Generating & verifying topic images..."
             StorageManager.save_project(project_record)
-            if style == "car_edit" and car_plan and any(sc.get("user_media") for sc in script_data.get("scenes", [])):
+            if list_data:
+                from agents import list_video
+                project_record["progress_step"] = "list-video: Building one scene per item with its verified photo..."
+                StorageManager.save_project(project_record)
+                image_report = list_video.build_visuals(project_dir, script_data["scenes"], list_data)
+            elif style == "car_edit" and car_plan and any(sc.get("user_media") for sc in script_data.get("scenes", [])):
                 from agents import new_launch
                 project_record["progress_step"] = "new-launch: Using your uploaded photos & clips..."
                 StorageManager.save_project(project_record)

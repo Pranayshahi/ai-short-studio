@@ -163,6 +163,10 @@ def _photo_name_ok(file_title: str, model: Dict[str, Any]) -> bool:
     from agents.subject_match import designators, mentions_any
     if _BAD_PHOTO_WORDS.search(file_title):
         return False
+    if model.get("_kind") == "firearm" and re.search(
+            r"cartridge|ammunition|\bammo\b|bullet|\brounds?\b|magazine|users|\bmap\b|headstamp|scope only|suppressor only",
+            file_title, re.I):
+        return False  # 'McMillan TAC-50 cartridge.jpg' / 'TAC-50 Users.png' are not the rifle
     name = display_name(model)
     desigs = designators(name)
     if desigs:
@@ -179,6 +183,16 @@ def _photo_name_ok(file_title: str, model: Dict[str, Any]) -> bool:
                                                        file_title.replace("_", " "), re.I)
     if model.get("_kind") == "firearm" and full_phrase:
         return True  # the full two-word name ('VSS Vintorez', 'AS Val') is specific enough on its own
+    if model.get("_kind") == "firearm":
+        flat = re.sub(r"[^a-z0-9]", "", file_title.lower())
+        if len(re.sub(r"[^a-z0-9]", "", name.lower())) >= 6 and re.sub(r"[^a-z0-9]", "", name.lower()) in flat:
+            return True  # 'CheyTacIntervention.jpg'
+        # the model part without the maker ('HTI' of 'Desert Tech HTI', 'Intervention' of 'CheyTac Intervention')
+        model_tokens = [t for t in name.split()[1:] if len(re.sub(r"[^A-Za-z0-9]", "", t)) >= 3]
+        if any(re.search(rf"(?<![A-Za-z]){re.escape(t)}(?![A-Za-z])", file_title.replace("_", " "), re.I)
+               or (len(re.sub(r"[^a-z0-9]", "", t.lower())) >= 4 and re.sub(r"[^a-z0-9]", "", t.lower()) in flat)
+               for t in model_tokens):
+            return True  # 'TAC-50' matches 'Tac50.jpg'
     return named and bool(re.search(category, file_title, re.I))
 
 
@@ -205,7 +219,7 @@ def _commons_photos(model: Dict[str, Any], limit: int = 8) -> List[Dict[str, str
                 "iiurlwidth": 640, "format": "json", "formatversion": 2})
             for pg in (rr.json().get("query", {}).get("pages", []) if rr.status_code == 200 else []):
                 ii = (pg.get("imageinfo") or [{}])[0]
-                if ii.get("mime") == "image/jpeg" and ii.get("width", 0) >= 900 and ii.get("width", 0) > ii.get("height", 1) \
+                if ii.get("mime") == "image/jpeg" and ii.get("width", 0) >= (600 if model.get("_kind") == "firearm" else 900) and ii.get("width", 0) > ii.get("height", 1) \
                         and ii.get("thumburl") and _photo_name_ok(pg["title"], model):
                     found.append({"file": pg["title"], "url": ii["thumburl"]})
     except (requests.RequestException, ValueError):
@@ -225,7 +239,7 @@ def _commons_photos(model: Dict[str, Any], limit: int = 8) -> List[Dict[str, str
             data = {}
         for pg in data.get("query", {}).get("pages", []):
             ii = (pg.get("imageinfo") or [{}])[0]
-            if ii.get("mime") == "image/jpeg" and ii.get("width", 0) >= 900 and ii.get("width", 0) > ii.get("height", 1) \
+            if ii.get("mime") == "image/jpeg" and ii.get("width", 0) >= (600 if model.get("_kind") == "firearm" else 900) and ii.get("width", 0) > ii.get("height", 1) \
                     and ii.get("thumburl") and _photo_name_ok(pg["title"], model) and pg["title"] not in [f["file"] for f in found]:
                 found.append({"file": pg["title"], "url": ii["thumburl"]})
         time.sleep(1)
@@ -448,6 +462,17 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
         cut.save(cut_p)
         _to_library(model, cut)
         return cut, True
+    if kind == "firearm" and raw is None:
+        # no cutout and no lead photo: a WIDE side-profile picture named for exactly this model (product shots
+        # like 'HTI-Right-Profile.jpg' fill the frame edge to edge, so they can't be cut out) is shown framed
+        for i, alt in enumerate(_commons_photos(model)):
+            alt_p = cache_dir / f"{key}_alt{i}.jpg"
+            if not (alt_p.exists() or _download(alt["url"], alt_p)):
+                continue
+            im = Image.open(alt_p).convert("RGB")
+            if im.width / max(1, im.height) >= 2.2 and _exterior_ok(im.convert("RGBA"), kind):
+                model["image_file_used"] = alt["file"]
+                return im, False
     # framed fallback = the model's OWN Wikipedia lead photo (a curated picture of exactly this model);
     # a row without its own lead photo (shared article) gets no picture rather than a wrong one
     return raw, False

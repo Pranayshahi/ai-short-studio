@@ -207,7 +207,8 @@ def _specs(fb: Dict[str, str]) -> Dict[str, str]:
             elif val and re.search(rf"(?:approx\w*\.?|about|around|~|c\.)\s*{re.escape(val)}", v, re.I):
                 val = f"about {val}"
         elif label in ("Engine", "Guidance", "Propellant", "Cartridge"):
-            val = re.split(r";|\(|,", v)[0].strip()
+            # first entry of a list ('*14.5×114mm *12.7x108mm *.50 BMG' -> '14.5×114mm')
+            val = re.split(r";|\(|,|\s\*|^\*", v.strip().lstrip("* "))[0].strip(" *")
             val = val if 3 <= len(val) <= 32 else ""
             if val and label == "Cartridge":
                 # several chamberings: never present the first as the only one ('6.5×47mm Lapua (+2)')
@@ -224,6 +225,8 @@ def _specs(fb: Dict[str, str]) -> Dict[str, str]:
             val = re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
             val = re.sub(r"(?i)^mach", "Mach", val)
             val = _metric(val)
+            val = re.sub(r"(\d)(m|km|kg|mm)\b", r"\1 \2", val)            # '2200m' -> '2200 m'
+            val = re.sub(r"(?<![\d,.])(\d{4,})(?=\s)", lambda mm: f"{int(mm.group(1)):,}", val)  # 2200 -> 2,200
             if re.match(r"(?i)min\.?\s|minimum|at least", v) and val and not re.match(r"(?i)over|at least|>", val):
                 val = f"at least {val}"  # 'Min. 500 km' must not read as exactly 500 km
         if val:

@@ -209,7 +209,7 @@ def test_conditional_ranges_are_not_shown_as_one_number():
     fb = ec._infobox("{{Infobox weapon\n| range = {{convert|600|m|yd}} iron sights<br/>{{convert|1000|m|yd}} with scope\n"
                      "| max_range = over {{convert|2000|m|yd}}\n}}")
     sp = ec._specs(fb)
-    assert "Range" not in sp and sp.get("Max range") == "over 2000 m", sp
+    assert "Range" not in sp and sp.get("Max range") == "over 2,000 m", sp
     assert ec._specs(ec._infobox("{{I\n| range = {{convert|300|m|yd}}\n}}")).get("Range") == "300 m"
 
 

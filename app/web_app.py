@@ -226,6 +226,8 @@ class GenerateRequest(BaseModel):
     chart_preview_id: Optional[str] = None
     # Car "New Launch": photos/clips uploaded beforehand (POST /api/new-launch/upload) build the whole video
     new_launch_upload_id: Optional[str] = None
+    # Narrated list video: the user's own ranked list (e.g. pasted from ChatGPT), one scene per verified item
+    ranked_list: Optional[str] = None
 
 class PublishRequest(BaseModel):
     override_qa: bool = False  # 'Approve anyway' after seeing the failed quality checks
@@ -562,6 +564,10 @@ def _start_generation(req, audio_mode, with_voice, with_music, duration, backgro
 
     if req.chart_preview_id:
         project_record["chart_preview_id"] = req.chart_preview_id
+        StorageManager.save_project(project_record)
+
+    if (req.ranked_list or "").strip() and (req.style or "default").lower() not in ("weaponx", "car_edit"):
+        project_record.update(list_video_text=req.ranked_list.strip(), list_video_title=(req.topic or "").strip() or None)
         StorageManager.save_project(project_record)
 
     if req.new_launch_upload_id:

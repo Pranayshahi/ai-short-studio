@@ -74,6 +74,9 @@ def parse_ranked_list(text: str) -> Dict[str, Any]:
 def _simplify(name: str) -> List[str]:
     """'CV90 Mk IV' -> ['CV90 Mk IV', 'CV90']; 'M2A4 Bradley' -> [..., 'M2 Bradley']; 'Puma IFV' -> [..., 'Puma']."""
     out = [name]
+    if "/" in name:  # 'ASVK / KSVK': each name on its own
+        out += [x.strip() for x in name.split("/") if x.strip()]
+        name = out[1]
     n = re.sub(r"\b(IFV|AFV|APC)\b", "", name).strip()
     n = re.sub(r"\s+Mk\.?\s*[IVX\d]+$", "", n, flags=re.I).strip()
     out.append(n)
@@ -296,14 +299,15 @@ def _norm(n: str) -> str:
     return re.sub(r"[^a-z0-9]", "", re.sub(r"\s*\([^)]*\)\s*$", "", n or "").lower().replace(" tank", ""))
 
 
-def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[List[str]] = None) -> Dict[str, Any]:
+def resolve_list(text: str, exclude: Optional[List[str]] = None) -> Dict[str, Any]:
     """The user's own ranked list (e.g. pasted from ChatGPT), in THEIR order with THEIR names. Every row is
-    verified on Wikipedia (right kind of system, real photo, country); a name that can't be verified is
-    skipped and reported, and the next list entries fill the chart (up to MAX_LIST_ROWS)."""
+    verified on Wikipedia (right kind of system, country, facts); a name that can't be verified is skipped and
+    reported, and the next list entries fill in (up to MAX_LIST_ROWS). Used by the chart AND the narrated
+    list video. -> {'title', 'kind', 'resolved': [(row, model)], 'skipped', 'parsed'} or {'error'} / {'ifv'}"""
     parsed = parse_ranked_list(text)
     spec_keys = {k for it in parsed["items"] for k in it["specs"]}
     if spec_keys & {"main armament", "armament", "infantry capacity", "crew"}:
-        return _build(parsed, out_path, cache_dir, "vehicle")  # the original IFV spec-sheet format
+        return {"ifv": True, "parsed": parsed}  # the original IFV spec-sheet format
     from agents import topic_weapon_list as twl
     title = parsed["title"] or "Ranked list"
     # a list with 'Calibre:' / 'Cartridge:' lines is a firearm list, whatever the title says
@@ -365,6 +369,17 @@ def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[Li
         return {"error": f"Only {len(resolved)} of the listed models could be verified on Wikipedia (need 5). "
                          f"Not verified: {'; '.join(skipped)[:400]}", "skipped": skipped}
     title = twl.fix_top_n(title, len(resolved))  # the user's 'Top 20' list shows at most 10 rows
+    return {"title": title, "kind": kind, "resolved": resolved, "skipped": skipped, "parsed": parsed}
+
+
+def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[List[str]] = None) -> Dict[str, Any]:
+    """WeaponX chart from the user's own ranked list (see resolve_list)."""
+    got = resolve_list(text, exclude)
+    if got.get("ifv"):
+        return _build(got["parsed"], out_path, cache_dir, "vehicle")
+    if got.get("error"):
+        return got
+    title, kind, resolved, skipped, parsed = got["title"], got["kind"], got["resolved"], got["skipped"], got["parsed"]
     chart = {"title": title.upper(), "full_title": parsed["full_title"], "items": [r for r, _ in resolved], "kind": kind}
     res = render(chart, resolved, out_path, cache_dir)
     if res.get("error"):

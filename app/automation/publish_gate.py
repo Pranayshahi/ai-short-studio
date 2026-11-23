@@ -57,7 +57,7 @@ def evaluate(project: Dict[str, Any]) -> Tuple[bool, List[str]]:
                 reasons.append(f"Scene {n}: AI image not content-verified")
         elif src in ("weaponx_lab_poster",):
             pass  # rendered locally from verified data rows
-        elif src in ("car_title_card", "car_showcase"):
+        elif src in ("car_title_card", "car_showcase", "list_video"):
             pass  # car intro/outro cards and full-car showcases are rendered locally from the video's own photos
         else:
             reasons.append(f"Scene {n}: unverified image source '{src}'")
