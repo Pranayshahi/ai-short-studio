@@ -1301,18 +1301,25 @@ class ShortsPipeline:
             return False
         sc = scenes[scene_num - 1]
         scenes_dir = Path(project["project_dir"]) / "scenes"
-        dest = scenes_dir / f"scene_{scene_num:02d}.png"
+        is_car = project.get("style") == "car_edit" or bool(project.get("is_car_edit"))
         others = [str(s.get("image_path")) for i, s in enumerate(scenes, 1) if i != scene_num and s.get("image_path")]
+        # The scene's OWN file: car videos number files one lower than scenes (intro card first), so
+        # "scene_{n}.png" was another scene's image - replacing scene 3 overwrote scene 4 (BMW i3 repeats)
+        own = Path(str(sc.get("image_path") or ""))
+        dest = own if own.name.startswith("scene_") and str(own) not in others else scenes_dir / f"scene_{scene_num:02d}.png"
+        if str(dest) in others:
+            dest = scenes_dir / f"scene_{scene_num:02d}_r.png"
         used = {str(r.get("source_url")) for r in (project.get("visual_records") or []) if r.get("source_url")}
         from agents.image_generator import ImageGeneratorAgent
         gen = ImageGeneratorAgent()
         rec = None
         try:
             rec = gen.acquire_fresh_web_image(project.get("topic", ""), sc, scene_num, dest,
-                                              used_urls=used, existing_images=others)
+                                              used_urls=used, existing_images=others,
+                                              style=project.get("style", "default"))
         except Exception as e:
             print(f"[AutoRepair] Web image for scene {scene_num} failed: {e}")
-        if not rec:
+        if not rec and not is_car:  # an AI car never matches the real model: keep the scene as it is
             try:
                 tmp = scenes_dir / f"scene_{scene_num:02d}.ai.png"
                 res = gen.generate_single_scene_image(sc.get("visual_prompt") or project.get("topic", ""), tmp,
@@ -1330,7 +1337,14 @@ class ShortsPipeline:
         if not rec:
             return False
         for suffix in ("_base.png", "_overlay.png", "_bg.png"):
-            (scenes_dir / f"scene_{scene_num:02d}{suffix}").unlink(missing_ok=True)
+            (dest.parent / f"{dest.stem}{suffix}").unlink(missing_ok=True)
+        if is_car and project.get("car_edit_plan"):
+            # car edits draw the title/caption as an overlay layer: redraw it on the new photo
+            try:
+                from agents.car_edit_agent import CarEditAgent
+                CarEditAgent.apply_swxft_title_overlays([str(dest)], project["car_edit_plan"], [sc])
+            except Exception as e:
+                print(f"[AutoRepair] Scene {scene_num}: caption overlay not redrawn ({e})")
         sc.update(image_path=str(dest), visual_source=rec.get("source"), visual_source_url=rec.get("source_url"),
                   visual_source_title=rec.get("source_title"))
         sc.pop("placeholder_from_scene", None)

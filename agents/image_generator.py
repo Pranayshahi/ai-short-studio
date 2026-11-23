@@ -474,7 +474,7 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
         records: List[Dict[str, Any]] = []
         for idx, sc in enumerate(scenes):
             s_num = sc.get("scene_number", idx + 1)
-            dest = scenes_dir / f"scene_{s_num:02d}.png"
+            dest = Path(sc["_dest"]) if sc.get("_dest") else scenes_dir / f"scene_{s_num:02d}.png"
             want = cpr.wanted_shots(sc)
             cand = cpr.pick(ranked, want, used)
             variant = 0
@@ -1575,6 +1575,13 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
             cand.update(source_verification=src_info, topic_match_score=score, topic_match_reason=reason)
             verified.append(cand)
         verified.sort(key=lambda c: c.get("topic_match_score", 0), reverse=True)
+        if str(style).lower() == "car_edit" and verified:
+            # Car videos: the same ranking/framing as a full run, never a photo already in the video
+            # (auto-repair used to fill BMW i3 scenes with road-trip shots, a man at a charger, repeats)
+            free = [c for c in verified if c.get("url") not in (used_urls or set())]
+            recs = self._assign_car_photos([dict(scene, scene_number=scene_num, _dest=str(dest_path))], free,
+                                           Path(dest_path).parent, [], clean_topic)
+            return recs[0] if recs else None
         tmp = Path(dest_path).with_name(Path(dest_path).stem + ".fresh.png")
         rec = self._acquire_verified_scene_image(
             scene, scene_num, clean_topic, keywords, verified, set(used_urls or set()), tmp, style,

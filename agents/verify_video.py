@@ -87,9 +87,13 @@ class VerifyVideoAgent:
         # 3. Verify Images, Sources & Topic Relevance ('image-generator')
         # ------------------------------------------------------------------
         i_data = image_report or project_record.get("image_report") or {}
+        # A fresh image_report (during generation) is current; otherwise the project's own visual_records
+        # are - image_report keeps the FIRST run's photos, so after auto-repair / manual fixes QA kept
+        # seeing replaced AI images and auto-repair kept replacing good scenes (BMW i3, 2026-11-23)
         visual_records = (
-            i_data.get("visual_records")
+            (image_report or {}).get("visual_records")
             or project_record.get("visual_records")
+            or i_data.get("visual_records")
             or []
         )
         image_check = self._verify_image_stage(project_record, visual_records, i_data)
