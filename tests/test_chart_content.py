@@ -149,3 +149,56 @@ def test_top_n_matches_rows_shown():
     rec = {"source": "weaponx_lab_poster", "image_path": "x", "ranked_items": [{"rank": i, "name": f"T{i}", "country": "X", "year": "", "bullets": []} for i in range(1, 9)]}
     attach_visual_metadata(sd, [rec])
     assert sd["title"].startswith("Top 8") and sd["scenes"][0]["on_screen_text"] == "TOP 8 TANKS" and "Top 8" in sd["scenes"][0]["narration"]
+
+
+SPETSNAZ = """Weapons Used by Russian Spetsnaz – 2026
+
+1. AK-12
+Assault Rifle
+- Calibre: 5.45×39mm
+- Status: Operational
+
+2. AS Val
+- Calibre: 9×39mm
+- Status: Operational
+
+3. VSS Vintorez
+- Calibre: 9×39mm
+- Status: Operational
+"""
+
+
+def test_firearm_list_with_calibre_lines(monkeypatch, tmp_path):
+    """'Weapons Used by Russian Spetsnaz' + 'Calibre:' lines is a FIREARM list (was read as missiles, and
+    'Assault Rifle' became AK-12's country); two weapons sharing one article each get a row."""
+    arts = {"AK-12": {"title": "AK-12", "type": "Assault rifle", "origin": "Russia", "year": 2018, "image_url": None, "specs": {}},
+            "AS Val": {"title": "AS Val and VSS Vintorez", "type": "Assault rifle (AS Val)", "origin": "Soviet Union", "year": None,
+                       "image_url": "x", "image_file": "AS_Val_&_VSS_Vintorez_noBG.png", "specs": {"Cartridge": "9×39mm", "Range": "400 m"}},
+            "VSS Vintorez": None}
+    arts["VSS Vintorez"] = arts["AS Val"]
+    monkeypatch.setattr(rp, "match_article", lambda name, words, kind: dict(arts[name]) if arts.get(name) else None)
+    monkeypatch.setattr(rp, "render", lambda chart, resolved, out, cache: {"path": str(out), "rows": len(resolved), "photos": 0})
+    monkeypatch.setattr(rp.ev, "photo_credits", lambda x: [])
+    monkeypatch.setattr(rp.time, "sleep", lambda s: None)
+    spetsnaz = SPETSNAZ + "4. SR-3 Vikhr\n- Calibre: 9×39mm\n5. SV-98\n- Calibre: 7.62×54mmR\n"
+    arts["SR-3 Vikhr"] = {"title": "SR-3 Vikhr", "type": "Assault rifle", "origin": "Russia", "year": 1996, "image_url": "x", "specs": {}}
+    arts["SV-98"] = {"title": "SV-98", "type": "Sniper rifle", "origin": "Russia", "year": 2003, "image_url": "x", "specs": {}}
+    r = rp.make_poster(spetsnaz, tmp_path / "c.png", tmp_path)
+    assert r["kind"] == "firearm", r
+    names = [i["name"] for i in r["items"]]
+    assert names[:3] == ["AK-12", "AS Val", "VSS Vintorez"], (names, r.get("skipped"))
+    assert r["items"][0]["country"] == "Russia", "'Assault Rifle' is not a country"
+    assert all(i["article"] == "AS Val and VSS Vintorez" for i in r["items"][1:3])
+    assert all(b.startswith("Cartridge") for i in r["items"][1:3] for b in i["bullets"]), "shared article: cartridge only"
+
+
+def test_firearm_photo_view_rules():
+    from PIL import Image, ImageDraw
+    from agents import evolution_poster as ev
+    side = Image.new("RGBA", (600, 120), (0, 0, 0, 0)); ImageDraw.Draw(side).rectangle((0, 40, 599, 80), fill=(20, 20, 20, 255))
+    front = Image.new("RGBA", (200, 220), (0, 0, 0, 0)); ImageDraw.Draw(front).ellipse((30, 20, 170, 200), fill=(20, 20, 20, 255))
+    rifle = {"type": "Sniper rifle"}
+    assert ev.firearm_view_ok(side, rifle) and not ev.firearm_view_ok(front, rifle), "front views are not side views"
+    assert ev.firearm_view_ok(front, {"type": "Semi-automatic pistol"}), "pistols are compact"
+    # cut through the body at the photo's right edge vs a thin muzzle touching it
+    assert not ev.firearm_view_ok(side, rifle, box=(10, 0, 1000, 120), size=(1000, 400))

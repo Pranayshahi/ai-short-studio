@@ -167,15 +167,49 @@ def _photo_name_ok(file_title: str, model: Dict[str, Any]) -> bool:
     desigs = designators(name)
     if desigs:
         return mentions_any(file_title, desigs)
-    # Plain names ("Puma") are ambiguous: also require a vehicle word in the file name
-    named = any(w.lower() in file_title.lower() for w in re.findall(r"[A-Za-z]{4,}", name))
-    return named and bool(re.search(r"ifv|spz|sch[uü]tzenpanzer|vehicle|panzer|apc|tank|army|armou?r|military|bundeswehr", file_title, re.I))
+    # Plain names ("Puma") are ambiguous: also require a vehicle (or, for guns, a firearm) word in the file name.
+    # Short names ('AS Val': no word of 4+ letters) must appear as the whole phrase.
+    long_words = re.findall(r"[A-Za-z]{4,}", name)
+    named = any(w.lower() in file_title.lower() for w in long_words) if long_words else \
+        bool(re.search(rf"(?<![A-Za-z]){re.escape(name)}(?![A-Za-z])", file_title.replace("_", " "), re.I))
+    category = (r"rifle|gun|pistol|carbine|smg|sniper|weapon|firearm|avtomat|army|military"
+                if model.get("_kind") == "firearm" else
+                r"ifv|spz|sch[uü]tzenpanzer|vehicle|panzer|apc|tank|army|armou?r|military|bundeswehr")
+    full_phrase = len(name.split()) >= 2 and re.search(rf"(?<![A-Za-z]){re.escape(name)}(?![A-Za-z])",
+                                                       file_title.replace("_", " "), re.I)
+    if model.get("_kind") == "firearm" and full_phrase:
+        return True  # the full two-word name ('VSS Vintorez', 'AS Val') is specific enough on its own
+    return named and bool(re.search(category, file_title, re.I))
 
 
 def _commons_photos(model: Dict[str, Any], limit: int = 8) -> List[Dict[str, str]]:
     """Exterior photo candidates: the model's Commons category first, then its article's images."""
     found: List[Dict[str, str]] = []
     name = display_name(model)
+    # Commons search by name through Wikimedia's API gateway (commons.wikimedia.org itself is blocked on this
+    # network, so the category query below returns nothing), details via en.wikipedia
+    others = [o.lower() for o in model.get("_exclude_names") or []]  # the other weapon of a shared article
+    try:
+        titles: List[str] = []
+        # a bare short name finds valleys and people ('AS Val'): firearms also search '<name> rifle' / 'gun'
+        qs = [name] + ([f"{name} rifle", f"{name} gun"] if model.get("_kind") == "firearm" else [])
+        for q in qs:
+            r = requests.get("https://api.wikimedia.org/core/v1/commons/search/page", params={"q": q, "limit": 30},
+                             headers=ec.HEADERS, timeout=20)
+            titles += [pg["title"] for pg in (r.json().get("pages", []) if r.status_code == 200 else [])
+                       if re.search(r"\.jpe?g$", str(pg.get("title", "")), re.I) and pg["title"] not in titles
+                       and not any(o in pg["title"].lower() for o in others)]
+        if titles:
+            rr = requests.get(ec.API, headers=ec.HEADERS, timeout=30, params={
+                "action": "query", "titles": "|".join(titles[:40]), "prop": "imageinfo", "iiprop": "url|size|mime",
+                "iiurlwidth": 640, "format": "json", "formatversion": 2})
+            for pg in (rr.json().get("query", {}).get("pages", []) if rr.status_code == 200 else []):
+                ii = (pg.get("imageinfo") or [{}])[0]
+                if ii.get("mime") == "image/jpeg" and ii.get("width", 0) >= 900 and ii.get("width", 0) > ii.get("height", 1) \
+                        and ii.get("thumburl") and _photo_name_ok(pg["title"], model):
+                    found.append({"file": pg["title"], "url": ii["thumburl"]})
+    except (requests.RequestException, ValueError):
+        pass
     queries = [
         {"generator": "categorymembers", "gcmtitle": f"Category:{name}", "gcmtype": "file", "gcmlimit": 40},
         {"generator": "images", "titles": model["title"], "gimlimit": 40},
@@ -282,6 +316,59 @@ def _rgb_on_white(im: Image.Image) -> Image.Image:
     return im.convert("RGB")
 
 
+LONG_GUN_MIN_ELONGATION = 2.2  # measured: side views of rifles 2.4-7 (a bipod adds height), SMGs ~2.4;
+                               # the Orsis T-5000 front view 1.85, a folded-stock SR-3 1.5
+EDGE_MARGIN = 0.012
+
+
+def _elongation(img: Image.Image) -> float:
+    import numpy as np
+    small = img.split()[3].resize((max(1, img.width // 2), max(1, img.height // 2)))
+    ys, xs = np.nonzero(np.asarray(small) > 40)
+    if len(xs) < 20:
+        return 0.0
+    ev_ = np.sort(np.linalg.eigvalsh(np.cov(np.vstack([xs, ys]).astype(float))))
+    return float(np.sqrt(ev_[1] / max(ev_[0], 1e-6)))
+
+
+def _compact_gun(model: Dict[str, Any]) -> bool:
+    return bool(re.search(r"pistol|handgun|revolver", str(model.get("type") or ""), re.I))
+
+
+def firearm_view_ok(cut: Optional[Image.Image], model: Dict[str, Any], box=None, size=None) -> bool:
+    """A firearm photo must show the WHOLE weapon from the side: long and thin (rifles, machine guns,
+    SMGs; pistols are compact) and, when the photo box is known, not cut off by the photo's edge.
+    (Spetsnaz chart: an Orsis T-5000 seen from the front, a VSS close-up, an AS Val + VSS group photo.)"""
+    if cut is None:
+        return False
+    if not _compact_gun(model) and _elongation(cut) < LONG_GUN_MIN_ELONGATION:
+        return False
+    if box and size:
+        import numpy as np
+        w, h = size
+        x0, y0, x1, y1 = box
+        mx, my = w * EDGE_MARGIN, h * EDGE_MARGIN
+        touches = [x0 <= mx, x1 >= w - mx, y0 <= my, y1 >= h - my]
+        if sum(touches) >= 3:
+            return False  # the 'object' fills the photo: the background wasn't separated
+        a = np.asarray(cut.split()[3]) > 40
+        colmax = max(1, int(a.sum(axis=0).max()))
+        # measured: a complete rifle cropped tightly touches the edge with its thin muzzle (0.08-0.21 of the
+        # gun's height); a weapon cut off by the photo is cut through its body (thicker)
+        if touches[0] and a[:, :3].sum(axis=0).max() / colmax >= 0.3:
+            return False
+        if touches[1] and a[:, -3:].sum(axis=0).max() / colmax >= 0.3:
+            return False
+        # top / bottom: a diagonal close-up (VSS 'Tank Biathlon 01': stock cut off at the bottom) is cut
+        # through its body there too
+        rowmax = max(1, int(a.sum(axis=1).max()))
+        if touches[2] and a[:3, :].sum(axis=1).max() / rowmax >= 0.3:
+            return False
+        if touches[3] and a[-3:, :].sum(axis=1).max() / rowmax >= 0.3:
+            return False
+    return True
+
+
 def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.Image], bool]:
     """(image, is_cutout). Lead photo first; if it can't be cut out cleanly, other photos from the
     same article; the framed lead photo is the last resort. Cached per article."""
@@ -289,6 +376,8 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
     from agents import photo_library
     # 1) the verified photo library: a cutout that already passed every check (no download, works offline)
     lib = photo_library.get(model["title"])
+    if lib is not None and model.get("_kind") == "firearm" and not firearm_view_ok(lib, model):
+        lib = None  # saved before the side-view rule (e.g. a group photo of two rifles)
     if lib is not None:
         model["image_file_used"] = (photo_library.entry(model["title"]) or {}).get("source_file") or model.get("image_file")
         return lib, True
@@ -296,12 +385,16 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
     key = re.sub(r"[^A-Za-z0-9]+", "_", model["title"])[:60]
     cut_p, raw_p = cache_dir / f"{key}_cut.png", cache_dir / f"{key}.jpg"
     lead_rejected = bool(model.get("image_file")) and model["image_file"].replace(" ", "_") in rejected
+    # no lead photo (AK-12's article has none) or a row sharing another row's article (VSS Vintorez in
+    # 'AS Val and VSS Vintorez'): go straight to photos found by THIS model's name
+    lead_rejected = lead_rejected or not model.get("image_url")
     if lead_rejected:  # the user rejected this photo: never show it again, go to the article's other photos
         cut_p.unlink(missing_ok=True)
     if cut_p.exists():
         cached = Image.open(cut_p).convert("RGBA")
         # Cutouts cached under older, weaker checks are re-checked for strict kinds
-        if model.get("_kind", "vehicle") == "vehicle" or _exterior_ok(cached, model.get("_kind")):
+        if (model.get("_kind", "vehicle") == "vehicle" or _exterior_ok(cached, model.get("_kind"))) and \
+                (model.get("_kind") != "firearm" or firearm_view_ok(cached, model)):
             _to_library(model, cached)
             return cached, True
         cut_p.unlink(missing_ok=True)
@@ -323,7 +416,11 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
             _to_library(model, ready)
             return ready, True
         raw = _rgb_on_white(src)
-        cut = _cutout(raw)
+        if kind == "firearm":
+            got = _cutout(raw, with_box=True)
+            cut = got[0] if got and firearm_view_ok(got[0], model, got[1], raw.size) else None
+        else:
+            cut = _cutout(raw)
         if cut is not None and strict and not _exterior_ok(cut, kind):
             cut = None
     if cut is None:
@@ -336,7 +433,12 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
             alt_p = cache_dir / f"{key}_alt{i}.jpg"
             if alt_p.exists() or _download(alt["url"], alt_p):
                 alt_a = _alpha_path(alt_p)
-                cut = (_ready_cutout(Image.open(alt_a)) if alt_a.exists() else None) or _cutout(Image.open(alt_p).convert("RGB"))
+                if kind == "firearm":
+                    alt_img = Image.open(alt_p).convert("RGB")
+                    got = _cutout(alt_img, with_box=True)
+                    cut = got[0] if got and firearm_view_ok(got[0], model, got[1], alt_img.size) else None
+                else:
+                    cut = (_ready_cutout(Image.open(alt_a)) if alt_a.exists() else None) or _cutout(Image.open(alt_p).convert("RGB"))
                 if cut is not None and _exterior_ok(cut, kind):
                     model["image_file_used"] = alt["file"]
                     break
@@ -346,6 +448,8 @@ def fetch_photo(model: Dict[str, Any], cache_dir: Path) -> Tuple[Optional[Image.
         cut.save(cut_p)
         _to_library(model, cut)
         return cut, True
+    # framed fallback = the model's OWN Wikipedia lead photo (a curated picture of exactly this model);
+    # a row without its own lead photo (shared article) gets no picture rather than a wrong one
     return raw, False
 
 

@@ -209,6 +209,11 @@ def _specs(fb: Dict[str, str]) -> Dict[str, str]:
         elif label in ("Engine", "Guidance", "Propellant", "Cartridge"):
             val = re.split(r";|\(|,", v)[0].strip()
             val = val if 3 <= len(val) <= 32 else ""
+            if val and label == "Cartridge":
+                # several chamberings: never present the first as the only one ('6.5×47mm Lapua (+2)')
+                raw_items = [x for x in re.split(r"<br\s*/?>|\n\s*\*|\*|;|\n", fb[key]) if re.search(r"\d", x)]
+                if len(raw_items) > 1:
+                    val = f"{val} (+{len(raw_items) - 1})"
         else:
             m = _VALUE.search(v)
             val = re.sub(r"\s+", " ", m.group(1)).strip() if m else ""

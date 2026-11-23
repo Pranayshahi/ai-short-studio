@@ -124,7 +124,8 @@ def match_article(name: str, category_words: str = "fighting vehicle", kind: str
         scored = []
         for t in found:
             m = models.get(t)
-            if not m or not m.get("image_url") or t.lower().startswith("list of"):
+            # an article without a lead photo is fine: the photo is then searched by the model's name
+            if not m or t.lower().startswith("list of"):
                 continue
             text = f"{t} {m.get('lead', '')[:300]}"
             base = re.sub(r"\s*\([^)]*\)\s*$", "", t).strip().lower()
@@ -241,9 +242,15 @@ def render(parsed: Dict[str, Any], resolved: List[Tuple[Dict[str, Any], Optional
         name_x = x + 6
         d.text((name_x, top + 4), item["name"], font=f_name, fill=(10, 10, 10))
         nw = d.textlength(item["name"], font=f_name)
-        if item.get("year"):
-            d.text((name_x + nw + 8, top + 7), f"({item['year']})", font=f_year, fill=(10, 10, 10))
-        d.text((name_x, top + 42), " / ".join(countries) or item.get("country", ""), font=f_country, fill=(40, 40, 40))
+        country_txt = " / ".join(countries) or item.get("country", "")
+        year_txt = f"({item['year']})" if item.get("year") else ""
+        photo_left = 560 - 190 if parsed.get("kind") == "firearm" else W
+        if year_txt and name_x + nw + 8 + d.textlength(year_txt, font=f_year) > photo_left - 10:
+            country_txt = f"{country_txt} · {item['year']}" if country_txt else item["year"]  # no room: year moves down
+            year_txt = ""
+        if year_txt:
+            d.text((name_x + nw + 8, top + 7), year_txt, font=f_year, fill=(10, 10, 10))
+        d.text((name_x, top + 42), country_txt, font=f_country, fill=(40, 40, 40))
         # Photo of the exact model, centred in the row, sitting on a common baseline
         if model is not None:
             img, is_cut = ev.fetch_photo(model, cache_dir)
@@ -294,11 +301,14 @@ def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[Li
     verified on Wikipedia (right kind of system, real photo, country); a name that can't be verified is
     skipped and reported, and the next list entries fill the chart (up to MAX_LIST_ROWS)."""
     parsed = parse_ranked_list(text)
-    if any(it["specs"] for it in parsed["items"]):
-        return _build(parsed, out_path, cache_dir, "vehicle")  # the original spec-sheet format (IFV lists)
+    spec_keys = {k for it in parsed["items"] for k in it["specs"]}
+    if spec_keys & {"main armament", "armament", "infantry capacity", "crew"}:
+        return _build(parsed, out_path, cache_dir, "vehicle")  # the original IFV spec-sheet format
     from agents import topic_weapon_list as twl
     title = parsed["title"] or "Ranked list"
-    kind = twl.kind_for(title)
+    # a list with 'Calibre:' / 'Cartridge:' lines is a firearm list, whatever the title says
+    # ('Weapons Used by Russian Spetsnaz' was read as a missile chart)
+    kind = "firearm" if spec_keys & {"calibre", "caliber", "cartridge"} else twl.kind_for(title)
     sub = twl.subtype_for(title)
     words = (sub[2][0] if sub and sub[2] else KINDS.get(kind, KINDS["vehicle"])["words"])
     excluded = {_norm(x) for x in exclude or []}
@@ -314,19 +324,38 @@ def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[Li
             continue
         # the user named this model: only the broad category must match (an APC list may include the VBCI,
         # which Wikipedia types 'infantry fighting vehicle'); a sight, a missile or a truck is still rejected
-        if not twl._is_kind({**m, "origin": m.get("origin") or it.get("country") or "x"}, kind,
+        if not twl._is_kind({**m, "origin": m.get("origin") or it.get("country") or "x",
+                             "image_url": m.get("image_url") or "photo searched by name"}, kind,
                             KINDS.get(kind, KINDS["vehicle"])["kind_re"], None):
             skipped.append(f"{it['name']}: Wikipedia says '{m['title']}' is a {(m.get('type') or 'different system')[:40]}")
             continue
-        if m["title"] in used or _norm(m["title"]) in excluded:
-            skipped.append(f"{it['name']}: same article as another row ({m['title']})")
+        if _norm(m["title"]) in excluded:
             continue
+        multi_article = bool(re.search(r"\s(?:and|&)\s", m["title"])) and _norm(it["name"]) != _norm(m["title"])
+        if m["title"] in used or multi_article:
+            # two weapons in one article ('AS Val and VSS Vintorez'): a row of its own when the article title
+            # names it; its photo is then searched by its own name (never the other row's photo)
+            if not (_norm(it["name"]) and _norm(it["name"]) in _norm(m["title"])) or it["name"] in used:
+                skipped.append(f"{it['name']}: same article as another row ({m['title']})")
+                continue
+            # the shared infobox mostly describes the other weapon: keep only the cartridge, no year
+            other_names = [x.strip() for x in re.split(r"\s+(?:and|&)\s+", m["title"]) if _norm(x) != _norm(it["name"])]
+            m = dict(m, _article=m["title"], title=it["name"], image_url=None, image_file=None, year=None, type="",
+                     _exclude_names=other_names,
+                     specs={k: v for k, v in (m.get("specs") or {}).items() if k == "Cartridge"})
+        if re.search(r"(?:&|\band\b|_and_|\+)", str(m.get("image_file") or ""), re.I):
+            m = dict(m, image_url=None, image_file=None)  # a group picture: search a photo of this model alone
         used.add(m["title"])
         m["_kind"] = kind
         same_model = _norm(it["name"]) == _norm(m["title"])
         b1, b2 = twl._bullets(m)
         row = {"rank": len(resolved) + 1, "name": it["name"],
-               "country": it.get("country") or (ec._country(m["origin"]) if m.get("origin") else ""),
+               # Wikipedia's origin first; the list's own line only when it really is a country
+               # (ChatGPT lists put the weapon type there: 'Assault Rifle')
+               "country": (ec._country(m["origin"]) if m.get("origin") else "") or (
+                   it.get("country") if it.get("country") and not re.search(
+                       r"rifle|gun|pistol|carbine|weapon|launcher|missile|tank|vehicle|sniper|machine|system|\d",
+                       it["country"], re.I) else ""),
                # the article's service year is the BASE model's: only shown when the row IS that model
                "year": twl.shown_year(m) if same_model else "",
                "lookup": m["title"], "specs": {"_bullets": [b1, b2]}, "note": it.get("note", "")}
@@ -346,7 +375,8 @@ def make_poster(text: str, out_path: Path, cache_dir: Path, exclude: Optional[Li
             seen.add(c["file"])
             credits.append(c)
     return {**res, "title": title, "kind": kind, "skipped": skipped, "credits": credits, "items": [
-        {"rank": r["rank"], "name": r["name"], "country": r["country"], "year": r["year"], "article": m["title"],
+        {"rank": r["rank"], "name": r["name"], "country": r["country"], "year": r["year"],
+         "article": m.get("_article") or m["title"],
          "photo": m.get("image_file_used") or m.get("image_file"), "note": r["note"],
          "bullets": [b for b in r["specs"]["_bullets"] if b]} for r, m in resolved]}
 
