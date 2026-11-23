@@ -65,3 +65,14 @@ def test_proportion_check_rejects_wrong_shapes():
     ImageDraw.Draw(sq).rectangle((300, 300, 700, 700), fill=(180, 90, 40))
     with mock.patch("agents.evolution_poster._cutout", lambda img, with_box=False: img.convert("RGBA").crop(img.convert("L").point(lambda v: 255 if v < 250 else 0).getbbox())):
         assert cp.normalize_cutout(sq, dims) is None, "a square blob is not a cartridge"
+
+
+def test_commons_search_avoids_blocked_host():
+    """commons.wikimedia.org is reset by this network: Commons search goes through api.wikimedia.org,
+    file details through en.wikipedia.org."""
+    import inspect
+    from agents.image_generator import ImageGeneratorAgent
+    src = inspect.getsource(ImageGeneratorAgent._commons_query)
+    assert "api.wikimedia.org/core/v1/commons/search/page" in src and "en.wikipedia.org/w/api.php" in src
+    assert "commons.wikimedia.org/w/api.php" not in inspect.getsource(ImageGeneratorAgent)
+    assert "api.wikimedia.org/core/v1/commons/search/page" in inspect.getsource(cp.commons_search)

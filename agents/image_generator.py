@@ -905,34 +905,8 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
                 search_queries.append(alt)
 
         for q in search_queries:
-            encoded_q = urllib.parse.quote(q)
-            api_url = (
-                f"https://commons.wikimedia.org/w/api.php?"
-                f"action=query&generator=search&gsrnamespace=6&gsrsearch=filetype:bitmap%20{encoded_q}"
-                f"&gsrlimit={limit}&prop=imageinfo&iiprop=url|size|mime|extmetadata&iiurlwidth=1280&format=json"
-            )
             try:
-                data_json = None
-                last_err = None
-                # Wikimedia intermittently resets connections; retry with backoff
-                for attempt in range(3):
-                    try:
-                        if HAS_REQUESTS:
-                            resp = requests.get(api_url, headers=self.HEADERS, timeout=10)
-                            if resp.status_code != 200:
-                                last_err = f"HTTP {resp.status_code}"
-                            else:
-                                data_json = resp.json()
-                        else:
-                            req = urllib.request.Request(api_url, headers=self.HEADERS)
-                            with urllib.request.urlopen(req, timeout=10) as r:
-                                import json as _json
-                                data_json = _json.loads(r.read().decode("utf-8"))
-                    except Exception as net_err:
-                        last_err = net_err
-                    if data_json is not None:
-                        break
-                    time.sleep(1.5 * (attempt + 1))
+                data_json, last_err = self._commons_query(q, limit)
                 if data_json is None:
                     print(f"[{self.AGENT_NAME}] Commons search failed for '{q}' after retries: {last_err}")
                     continue
@@ -1030,6 +1004,46 @@ class ImageGeneratorAgent(WeaponXPosterMixin, AIImageEngineMixin):
         tagset = {t.lower().strip() for t in tags}
         return any(w in tagset or (" " in w and w in text) or re.search(rf"(?<![\w/]){re.escape(w)}(?![\w/])", text)
                    for w in self.HOBBY_WORDS)
+
+    def _commons_query(self, q: str, limit: int) -> Tuple[Optional[Dict[str, Any]], Any]:
+        """Commons file search + imageinfo, shaped like the old generator=search response.
+        commons.wikimedia.org is blocked on this network (TCP reset, 2026-11-22), so: search via Wikimedia's
+        API gateway (api.wikimedia.org), then url/size/licence via en.wikipedia.org (Commons files resolve
+        through the shared repository). Both are retried; (None, error) when either fails."""
+        last_err: Any = None
+        titles: List[str] = []
+        for attempt in range(3):
+            try:
+                r = requests.get("https://api.wikimedia.org/core/v1/commons/search/page",
+                                 params={"q": q, "limit": min(int(limit or 20), 50)}, headers=self.HEADERS, timeout=12)
+                if r.status_code == 200:
+                    titles = [pg["title"] for pg in r.json().get("pages", [])
+                              if str(pg.get("title", "")).startswith("File:")
+                              and re.search(r"\.(jpe?g|png|webp|tiff?)$", pg["title"], re.I)]
+                    break
+                last_err = f"HTTP {r.status_code}"
+            except Exception as e:
+                last_err = e
+            time.sleep(1.5 * (attempt + 1))
+        else:
+            return None, last_err
+        if not titles:
+            return {"query": {"pages": {}}}, None
+        pages: Dict[str, Any] = {}
+        for i in range(0, len(titles), 20):
+            for attempt in range(3):
+                try:
+                    r = requests.get("https://en.wikipedia.org/w/api.php", headers=self.HEADERS, timeout=15, params={
+                        "action": "query", "titles": "|".join(titles[i:i + 20]), "prop": "imageinfo",
+                        "iiprop": "url|size|mime|extmetadata", "iiurlwidth": 1280, "format": "json"})
+                    if r.status_code == 200:
+                        pages.update(r.json().get("query", {}).get("pages", {}))
+                        break
+                    last_err = f"HTTP {r.status_code}"
+                except Exception as e:
+                    last_err = e
+                time.sleep(1.5 * (attempt + 1))
+        return ({"query": {"pages": pages}}, None) if pages else (None, last_err)
 
     def _search_openverse_images(self, query: str, limit: int = 15) -> List[Dict[str, Any]]:
         """Openverse (WordPress) public-domain / Creative Commons images, no key needed."""

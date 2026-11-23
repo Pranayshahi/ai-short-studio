@@ -154,13 +154,32 @@ def _imageinfo(files: List[str]) -> List[Dict[str, Any]]:
     return out
 
 
+def commons_search(query: str, limit: int = 25) -> List[str]:
+    """File titles on Wikimedia Commons for a query. commons.wikimedia.org is blocked on this network (TCP
+    reset); Wikimedia's API gateway (api.wikimedia.org) serves the same search."""
+    import requests
+    from agents import equipment_catalog as ec
+    try:
+        r = requests.get("https://api.wikimedia.org/core/v1/commons/search/page",
+                         params={"q": query, "limit": limit}, headers=ec.HEADERS, timeout=20)
+        if r.status_code == 200:
+            return [p["title"] for p in r.json().get("pages", []) if str(p.get("title", "")).startswith("File:")
+                    and re.search(r"\.(jpe?g|png)$", p["title"], re.I)]
+    except Exception as e:
+        print(f"[Cartridges] Commons search failed for '{query}': {e}")
+    return []
+
+
 def photo_candidates(name: str, article: str) -> List[Dict[str, Any]]:
     from agents import equipment_catalog as ec
     cands: List[Dict[str, Any]] = []
+    # Wikimedia Commons first (largest free collection), then the article's own images, then Openverse
+    files = list(dict.fromkeys(commons_search(f"{name} cartridge") + commons_search(name)))
+    cands += _imageinfo(files)
     d = ec._get({"action": "query", "titles": article, "prop": "images", "imlimit": 50, "redirects": 1, "formatversion": 2}) or {}
     files = [i["title"] for pg in d.get("query", {}).get("pages", []) for i in pg.get("images", [])
              if re.search(r"\.(jpe?g|png)$", i["title"], re.I)]
-    cands += _imageinfo(files)
+    cands += [c for c in _imageinfo(files) if c["title"] not in {x["title"] for x in cands}]
     try:
         from agents.image_generator import ImageGeneratorAgent
         cands += [dict(c, page_url=c.get("page_url"), short_url=c.get("page_url"))
@@ -168,8 +187,13 @@ def photo_candidates(name: str, article: str) -> List[Dict[str, Any]]:
     except Exception as e:
         print(f"[Cartridges] Openverse skipped for {name}: {e}")
     # this cartridge only, one round per picture
+    def clean_title(t: str) -> str:
+        t = re.sub(r"^(File:|Openverse:)", "", t).replace("_", " ")
+        for w in re.findall(r"[A-Za-z]{3,}", name):  # the cartridge's own name ('.30 Carbine') isn't a red flag
+            t = re.sub(rf"\b{re.escape(w)}\b", " ", t, flags=re.I)
+        return t
     return [c for c in cands if _mentions(f"{c['title']} {c.get('description', '')}", name)
-            and not _MULTI.search(re.sub(r"^(File:|Openverse:)", "", c["title"]))]
+            and not _MULTI.search(clean_title(c["title"]))]
 
 
 def _download(url: str) -> Optional[Image.Image]:
@@ -241,7 +265,7 @@ def ai_cartridge(name: str, dims: Dict[str, float], work: Path) -> Optional[Imag
 
 def picture_for(row: Dict[str, Any], work: Path, use_ai: bool = True) -> Dict[str, Any]:
     """{'img': RGBA or None, 'source': 'photo'|'ai'|'drawn', 'credit': {...} or None}"""
-    for c in photo_candidates(row["name"], row["article"])[:8]:
+    for c in photo_candidates(row["name"], row["article"])[:14]:
         img = _download(c["url"])
         cut = normalize_cutout(img, row["dims"]) if img is not None else None
         if cut is not None and looks_like_cartridge(cut, work):
