@@ -123,7 +123,7 @@ def _clean_type(raw: str) -> str:
     return re.sub(r"\s+", " ", parts[0] if parts else t).strip()
 
 
-_BULLET_ORDER = ["Range", "Speed", "Warhead", "No. built", "Cartridge", "Calibre", "Fire rate", "Weight",
+_BULLET_ORDER = ["Range", "Max range", "Speed", "Warhead", "No. built", "Cartridge", "Calibre", "Fire rate", "Weight",
                  "Engine", "Guidance", "Length"]
 
 
@@ -132,12 +132,12 @@ _BULLET_ORDER = ["Range", "Speed", "Warhead", "No. built", "Cartridge", "Calibre
 _BOUNDS: Dict[str, Dict[str, Tuple[str, float, float]]] = {
     "vehicle": {"Range": ("km", 100, 1500), "Speed": ("km/h", 15, 140), "Weight": ("t", 2, 90), "Main gun": ("mm", 7, 160)},
     "artillery": {"Range": ("km", 3, 500), "Speed": ("km/h", 10, 140), "Weight": ("t", 1, 80)},
-    "aircraft": {"Range": ("km", 100, 20000), "Speed": ("km/h", 100, 4500)},
+    "aircraft": {"Range": ("km", 100, 20000), "Max range": ("km", 100, 30000), "Speed": ("km/h", 100, 4500)},
     "warship": {"Range": ("km", 500, 60000), "Speed": ("km/h", 10, 100)},
-    "missile": {"Range": ("km", 0.3, 20000)},
+    "missile": {"Range": ("km", 0.3, 20000), "Max range": ("km", 0.3, 20000)},
     "air_defense": {"Range": ("km", 1, 1000)},
     "naval": {"Range": ("km", 0.5, 20000)},
-    "firearm": {"Range": ("m", 10, 3000), "Weight": ("kg", 0.2, 25), "Fire rate": ("rounds/min", 1, 6000)},
+    "firearm": {"Range": ("m", 10, 3000), "Max range": ("m", 10, 10000), "Weight": ("kg", 0.2, 25), "Fire rate": ("rounds/min", 1, 6000)},
 }
 
 

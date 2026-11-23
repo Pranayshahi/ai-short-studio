@@ -173,7 +173,7 @@ def _nationality(lead: str) -> str:
 _SPEC_FIELDS = [
     # 'range' on a TANK page is the gun's range (T-14: '5 km, Uralvagonzavod claims'); the driving range is
     # 'vehicle_range' (500 km). Kept apart; topic_weapon_list._bullets picks the right one per kind.
-    ("vehicle_range", "Vehicle range"), ("operational_range", "Range"), ("range", "Range"), ("max_range", "Range"),
+    ("vehicle_range", "Vehicle range"), ("operational_range", "Range"), ("range", "Range"), ("max_range", "Max range"),
     ("effective_range", "Range"),
     ("speed", "Speed"), ("max_speed", "Speed"), ("warhead", "Warhead"), ("warhead_weight", "Warhead"),
     ("number", "No. built"), ("number_built", "No. built"), ("produced", "No. built"),
@@ -215,6 +215,11 @@ def _specs(fb: Dict[str, str]) -> Dict[str, str]:
                 if len(raw_items) > 1:
                     val = f"{val} (+{len(raw_items) - 1})"
         else:
+            # Several conditional values (SV-98: 600 m with iron sights / 1000 m with a scope; ORSIS: one range
+            # per calibre): no single number is true, so it is left out (owner's rule: correct or nothing)
+            if label in ("Range", "Speed") and len(_VALUE.findall(v)) > 1 and re.search(
+                    r"<br|\n|sight|scope|optic|'''|with |without |depending|variant|version", fb[key], re.I):
+                continue
             m = _VALUE.search(v)
             val = re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
             val = re.sub(r"(?i)^mach", "Mach", val)

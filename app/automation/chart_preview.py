@@ -46,7 +46,8 @@ def build(topic: str, preview_id: Optional[str] = None, exclude: Optional[List[s
         if res.get("error"):
             raise ValueError(res["error"])
         agent = ImageGeneratorAgent()
-        rec = {"scene_number": 1, "image_path": str(dest), "source": "weaponx_lab_poster",
+        rec = {"scene_number": 1, "image_path": str(dest), "source": "weaponx_lab_poster", "kind": res.get("kind"),
+               "ranked_list": ranked_list,  # Auto-fix rebuilds from the user's own list, never an automatic one
                "source_url": "https://commons.wikimedia.org", "source_domain": "commons.wikimedia.org",
                "source_provider": "WeaponX Labs ranked chart (your list, Wikipedia-verified, Wikimedia Commons photos)",
                "license": "Photos CC/PD from Wikimedia Commons — see photo_credits", "author": "@WeaponXLabs Studio Engine",

@@ -202,3 +202,19 @@ def test_firearm_photo_view_rules():
     assert ev.firearm_view_ok(front, {"type": "Semi-automatic pistol"}), "pistols are compact"
     # cut through the body at the photo's right edge vs a thin muzzle touching it
     assert not ev.firearm_view_ok(side, rifle, box=(10, 0, 1000, 120), size=(1000, 400))
+
+
+def test_conditional_ranges_are_not_shown_as_one_number():
+    """SV-98: '600 m iron sights / 1000 m scope' -> no single 'Range'; max_range is labelled 'Max range'."""
+    fb = ec._infobox("{{Infobox weapon\n| range = {{convert|600|m|yd}} iron sights<br/>{{convert|1000|m|yd}} with scope\n"
+                     "| max_range = over {{convert|2000|m|yd}}\n}}")
+    sp = ec._specs(fb)
+    assert "Range" not in sp and sp.get("Max range") == "over 2000 m", sp
+    assert ec._specs(ec._infobox("{{I\n| range = {{convert|300|m|yd}}\n}}")).get("Range") == "300 m"
+
+
+def test_list_chart_records_its_kind_and_list():
+    import inspect
+    from app.automation import chart_preview
+    src = inspect.getsource(chart_preview.build)
+    assert '"kind": res.get("kind")' in src and '"ranked_list": ranked_list' in src

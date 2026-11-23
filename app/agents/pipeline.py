@@ -1550,7 +1550,17 @@ class ShortsPipeline:
         keep = [it.get("article") or it.get("name") for it in items if (it.get("article") or it.get("name")) not in excl]
         hero = Path(project["project_dir"]) / "scenes" / "hero_master.png"
         topic = (project.get("content_analysis") or {}).get("topic_subject") or project.get("topic", "")
-        if (self._static_chart_record(project) or {}).get("kind") == "cartridge":
+        rec_now = self._static_chart_record(project) or {}
+        if rec_now.get("ranked_list"):
+            # a chart from the user's own pasted list: rebuild from that list (verified again), not a new list
+            from agents import ranked_poster
+            cache = Path(config.OUTPUT_DIR) / "cache" / "evolution_photos"
+            res = ranked_poster.make_poster(rec_now["ranked_list"], hero, cache, exclude=excl)
+            if res.get("error"):
+                raise RuntimeError(res["error"])
+            new_rec = dict(rec_now, ranked_items=res["items"], photo_credits=res["credits"], kind=res.get("kind"),
+                           skipped=res.get("skipped") or [], image_path=str(hero))
+        elif rec_now.get("kind") == "cartridge":
             new_rec = self.image_generator._acquire_cartridge_poster(hero)  # re-read every size from Wikipedia
         else:
             new_rec = self.image_generator._acquire_topic_list_poster(topic, hero, keep_titles=keep, exclude_titles=excl)
