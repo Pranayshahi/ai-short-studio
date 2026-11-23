@@ -347,7 +347,7 @@ def render(parsed: Dict[str, Any], contenders: List[Dict[str, Any]], out_path: P
     # 1. Top Header Bar (Dark Carbon Rounded Header with "HEAD-TO-HEAD COMPARISON" + A VS B VS C)
     d.rounded_rectangle((18, 16, W - 18, 152), radius=24, fill=(11, 15, 25, 255), outline=(0, 229, 255, 220), width=3)
     f_sub = ev._font("Arial Bold.ttf", 22)
-    d.text((W // 2, 46), "⚡ HEAD-TO-HEAD SPEC & PHOTO COMPARISON ⚡", font=f_sub, fill=(0, 229, 255), anchor="mm")
+    d.text((W // 2, 46), "HEAD-TO-HEAD  ·  SPEC & PHOTO COMPARISON", font=f_sub, fill=(0, 229, 255), anchor="mm")
 
     title = parsed["title"]
     f_title = ev._font("Impact.ttf", 52)
@@ -411,7 +411,9 @@ def render(parsed: Dict[str, Any], contenders: List[Dict[str, Any]], out_path: P
         if model is not None:
             img, is_cut = ev.fetch_photo(model, cache_dir)
             if img is not None:
-                ev._paste_item(canvas, img, is_cut, photo_cx, photo_cy, photo_w - 16, photo_h - 12)
+                # _paste_item takes the box's TOP edge (it was given the centre, so every car sat half a
+                # box too low: under the next card / the footer - Porsche vs SF90 vs Revuelto, 2026-11-23)
+                ev._paste_item(canvas, img, is_cut, photo_cx, photo_top + 6, photo_w - 16, photo_h - 12)
                 placed_photos += 1
 
         # Right Column: 4 Modern Spec Rows with Winner Highlights
@@ -435,7 +437,7 @@ def render(parsed: Dict[str, Any], contenders: List[Dict[str, Any]], out_path: P
             d.text((sx0 + 14, ry0 + 28), str(val)[:28], font=f_val, fill=(6, 95, 70) if is_win else (15, 23, 42))
             if is_win:
                 d.rounded_rectangle((sx1 - 88, ry0 + 10, sx1 - 10, ry0 + 36), radius=8, fill=(16, 185, 129, 255))
-                d.text((sx1 - 49, ry0 + 23), "★ BEST", font=f_win, fill=(255, 255, 255), anchor="mm")
+                d.text((sx1 - 49, ry0 + 23), "BEST", font=f_win, fill=(255, 255, 255), anchor="mm")
 
         # Draw circular "VS" badge between cards
         if idx < n - 1:
@@ -448,17 +450,25 @@ def render(parsed: Dict[str, Any], contenders: List[Dict[str, Any]], out_path: P
     d.rounded_rectangle((18, fy0, W - 18, H - 16), radius=20, fill=(11, 15, 25, 255), outline=(245, 158, 11, 220), width=2)
     f_foot_hdr = ev._font("Arial Bold.ttf", 20)
     f_foot_val = ev._font("Arial Bold.ttf", 22)
-    d.text((W // 2, fy0 + 26), "🏆 CATEGORY WINNERS SUMMARY 🏆", font=f_foot_hdr, fill=(251, 191, 36), anchor="mm")
+    d.text((W // 2, fy0 + 26), "CATEGORY WINNERS", font=f_foot_hdr, fill=(251, 191, 36), anchor="mm")
 
-    summary_parts = []
-    if winners.get("power"):
-        summary_parts.append(f"⚡ Power: {winners['power']}")
-    if winners.get("speed"):
-        summary_parts.append(f"🚀 Speed: {winners['speed']}")
-    if winners.get("accel"):
-        summary_parts.append(f"🏁 0-100: {winners['accel']}")
-    summary_line = "   ·   ".join(summary_parts) if summary_parts else "Comment your winner below! 👇"
-    d.text((W // 2, fy0 + 70), summary_line[:68], font=f_foot_val, fill=(255, 255, 255), anchor="mm")
+    # One line per winner ("Lamborghini Revuelto: Power · Top speed · 0-100"; ties list every car), sized
+    # to fit - the old single line was cut at 68 characters mid-name
+    cats = {"power": "Power", "speed": "Top speed", "accel": "0-100"}
+    by_car: Dict[str, List[str]] = {}
+    for key, label in cats.items():
+        flag = {"power": "win_power", "speed": "win_speed", "accel": "win_accel"}[key]
+        for c in contenders:
+            if c.get(flag):
+                by_car.setdefault(c["name"], []).append(label)
+    lines = [f"{car}: {' · '.join(labels)}" for car, labels in by_car.items()] or ["Comment your winner below!"]
+    lines = lines[:2]
+    for i, line in enumerate(lines):
+        f_line = f_foot_val
+        while d.textlength(line, font=f_line) > W - 80 and f_line.size > 14:
+            f_line = ev._font("Arial Bold.ttf", f_line.size - 1)
+        y = fy0 + (70 if len(lines) == 1 else 58 + i * 32)
+        d.text((W // 2, y), line, font=f_line, fill=(255, 255, 255), anchor="mm")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.convert("RGB").save(out_path, "PNG")

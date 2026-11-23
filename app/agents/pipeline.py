@@ -57,7 +57,9 @@ def refresh_photo_credits(project: Dict[str, Any]) -> None:
 
 def photo_credit_lines(visual_records: List[Dict[str, Any]]) -> List[str]:
     credits, seen = [], set()
-    poster_rec = next((v for v in visual_records if v.get("ranked_items") or v.get("evolution_pairs")), None)
+    # comparison posters too: without them the refresh found "no credits" and deleted the whole block
+    poster_rec = next((v for v in visual_records if v.get("ranked_items") or v.get("evolution_pairs")
+                       or v.get("comparison_items")), None)
     if poster_rec:
         from agents import evolution_poster as _evp
         return _evp.compact_credits(poster_rec.get("photo_credits") or [])
