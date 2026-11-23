@@ -148,10 +148,10 @@ def item_frame(it: Dict[str, Any], total: int, cache_dir: Path) -> Image.Image:
     country = r.get("country", "") + (f" · {r['year']}" if r.get("year") else "")
     d.text((x, y + 8), country, font=_font(46, False), fill=(200, 210, 225))
     # photo
-    _place_photo(img, it["photo"], it["is_cut"], (40, 640, W - 40, 1240))
-    # verified facts
+    _place_photo(img, it["photo"], it["is_cut"], (40, 590, W - 40, 1160))
+    # verified facts (they end by y=1400: the captions own the zone below, from ~1480)
     bullets = [b for b in (r.get("specs") or {}).get("_bullets", []) if b]
-    fy = 1290
+    fy = 1200
     for b in bullets[:2]:
         lab, _, val = b.partition(" - ")
         d.rounded_rectangle((60, fy, W - 60, fy + 92), radius=20, fill=(24, 34, 54), outline=(60, 80, 110), width=2)
