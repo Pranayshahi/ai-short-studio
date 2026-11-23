@@ -59,3 +59,10 @@ def test_off_domain_descriptions():
         assert fc.off_domain(d), d
     for d in ["Unmanned combat aerial vehicle", "Main battle tank", "Sports car manufactured by Porsche"]:
         assert not fc.off_domain(d), d
+
+
+def test_chart_values_compare_by_value_not_text():
+    """'3150 m' (drawn before thousands separators) and '3,150 m' are the same verified figure."""
+    import inspect
+    src = inspect.getsource(fc._check_chart)
+    assert "canon(good.get(lab)) != canon(val)" in src

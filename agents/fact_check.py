@@ -369,7 +369,10 @@ def _check_chart(poster: Dict[str, Any], project: Dict[str, Any]) -> List[Dict[s
                 continue
             if lab == "Calibre" and kind == "vehicle":
                 lab = "Main gun"
-            if good.get(lab) != val:
+            # compare the VALUE, not the text: '3150 m' and '3,150 m' are the same verified figure (a chart drawn
+            # before thousands separators were added was flagged as wrong)
+            canon = lambda x: re.sub(r"[\s,]", "", str(x or "")).lower()
+            if canon(good.get(lab)) != canon(val):
                 out.append({"kind": "chart", "detail": f"{name}: shows '{b}', verified value: {good.get(lab) or 'none (not certain)'}",
                             "fix": "rebuild_chart"})
     n = len(items)
