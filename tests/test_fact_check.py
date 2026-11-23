@@ -66,3 +66,10 @@ def test_chart_values_compare_by_value_not_text():
     import inspect
     src = inspect.getsource(fc._check_chart)
     assert "canon(good.get(lab)) != canon(val)" in src
+
+
+def test_list_and_cartridge_charts_can_be_rebuilt():
+    import inspect
+    from app.agents.pipeline import ShortsPipeline
+    src = inspect.getsource(ShortsPipeline.rebuild_weaponx_chart)
+    assert 'rec.get("ranked_list")' in src and 'rec.get("kind") == "cartridge"' in src

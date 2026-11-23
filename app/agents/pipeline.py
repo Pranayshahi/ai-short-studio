@@ -1554,7 +1554,9 @@ class ShortsPipeline:
         """Rebuilds a WeaponX list chart: the rows the user rejected are replaced by other verified models,
         the other rows stay; every photo is re-checked. Only for list charts built from the topic."""
         rec = self._static_chart_record(project)
-        if not rec or not (rec.get("list_chart") or "list chart" in str(rec.get("source_provider", ""))):
+        # topic list charts, charts from the user's own pasted list, and cartridge charts can all be rebuilt
+        if not rec or not (rec.get("list_chart") or "list chart" in str(rec.get("source_provider", ""))
+                           or rec.get("ranked_list") or rec.get("kind") == "cartridge"):
             return False
         items = rec.get("ranked_items") or []
         low = [n.lower() for n in (exclude_names or [])]
