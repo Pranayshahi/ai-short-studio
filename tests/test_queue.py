@@ -108,3 +108,27 @@ def test_queued_project_without_job_is_cleaned_up(fresh_queue, tmp_path):
     marked = wa.sweep_orphaned_generations("test")
     assert "qa_lost" in marked and "qa_ok" not in marked
     assert StorageManager.get_project_by_id("qa_ok")["status"] == "queued"
+
+
+def test_paused_queue_starts_nothing(fresh_queue):
+    """deploy.sh pauses the queue before its final check: no job may start during tests + restart."""
+    jobs = fresh_queue
+    j = jobs.enqueue("daily_car_edit", {})
+    jobs.pause(minutes=5)
+    try:
+        assert jobs.paused() and jobs.claim_next() is None and jobs.claim(j["id"]) is None
+    finally:
+        jobs.resume()
+    assert not jobs.paused() and jobs.claim_next()["id"] == j["id"]
+    jobs.pause(minutes=-1)  # an expired pause (crashed deploy) never blocks the queue
+    assert not jobs.paused()
+    jobs.resume()
+
+
+def test_car_comparisons_are_not_labelled_weaponx():
+    import inspect
+    from app.agents import pipeline
+    src = inspect.getsource(pipeline)
+    assert 'channel") == "autoflashx" and style == "weaponx"' in src and '": Head-to-Head"' in src
+    js = open("app/static/app.js").read()
+    assert "🏎️ Car Comparison" in js

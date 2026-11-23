@@ -31,8 +31,20 @@ sys.exit(0 if busy else 1)
 PYEOF
 }
 
+queue() {  # pause / resume the job queue (see app/automation/jobs.pause)
+  "$PY" -c "import sys; sys.path.insert(0, '.'); from app.automation import jobs; jobs.$1()"
+}
+# Pause the queue BEFORE the last 'nothing running' check, so no job can start during the tests and get
+# cut off by the restart; always resume on exit (success, failure or Ctrl-C).
+trap 'queue resume >/dev/null 2>&1' EXIT
 if [ "$MODE" = "--wait" ]; then
-  for _ in $(seq 1 720); do busy >/dev/null || break; sleep 10; done
+  for _ in $(seq 1 720); do
+    queue pause
+    busy >/dev/null || break
+    queue resume; sleep 10
+  done
+else
+  queue pause
 fi
 if out="$(busy)"; then
   echo "NOT restarting: still busy:"; echo "$out"

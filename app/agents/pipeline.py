@@ -670,6 +670,13 @@ class ShortsPipeline:
             elif style == "car_edit" or (project_record.get("channel") == "autoflashx"):
                 from agents.youtube_metadata import apply_car_hashtags
                 clean_description, clean_tags = apply_car_hashtags(clean_description, clean_tags)
+            if project_record.get("channel") == "autoflashx" and style == "weaponx":
+                # A car comparison chart ('A vs B vs C') is drawn by the WeaponX chart engine, but it's a CAR
+                # video on AutoFlashX: no WeaponX wording or military hashtags anywhere
+                clean_title = re.sub(r":?\s*WeaponX Lab Breakdown", ": Head-to-Head", clean_title, flags=re.I)
+                clean_title = re.sub(r"\s*#(?:WeaponXLabs|MilitaryTech|Defense)\b", "", clean_title, flags=re.I)
+                clean_tags = [t for t in clean_tags if not re.search(r"weaponx|military|defen[cs]e", str(t), re.I)]
+                project_record.update(engine="Car Comparison", is_car_comparison=True)
             project_record.update({
                 "progress_step": "Verify-video: Finalizing & verifying image and video...",
                 "title": clean_title,

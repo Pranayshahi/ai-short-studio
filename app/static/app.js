@@ -409,7 +409,7 @@ function renderGrid(projects) {
           <h3 class="card-title">${escapeHtml(p.title || p.topic)}</h3>
           <div class="card-footer">
             <span class="qa-card-badge ${qaClass}">🛡️ QA: ${qaScore}</span>
-            ${p.style === 'openmontage' ? '<span class="badge-openmontage">🎬 OpenMontage</span>' : (p.style === 'weaponx' ? '<span class="badge-openmontage" style="background: rgba(255,69,0,0.18); border-color: rgba(255,69,0,0.5); color: #ff8c00;">🔥 WeaponX</span>' : '')}
+            ${p.style === 'openmontage' ? '<span class="badge-openmontage">🎬 OpenMontage</span>' : (p.style === 'weaponx' ? ((p.channel === 'autoflashx' || p.is_car_comparison) ? '<span class="badge-openmontage" style="background: rgba(56,189,248,0.15); border-color: rgba(56,189,248,0.5); color: #38bdf8;">🏎️ Car Comparison</span>' : '<span class="badge-openmontage" style="background: rgba(255,69,0,0.18); border-color: rgba(255,69,0,0.5); color: #ff8c00;">🔥 WeaponX</span>') : '')}
             ${pubPill}
           </div>
           ${openFb && !needsAttention && !isInProgress ? `

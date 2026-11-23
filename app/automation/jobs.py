@@ -62,8 +62,33 @@ def enqueue(kind: str = "daily_short", params: Optional[Dict[str, Any]] = None, 
     return result["job"]
 
 
+PAUSE = "queue_pause"
+
+
+def pause(minutes: float = 20, by: str = "deploy") -> None:
+    """No new job starts until resume() or the pause expires (a crashed deploy can't block the queue).
+    scripts/deploy.sh pauses before its final 'nothing running' check, so no job can start between that
+    check and the restart (a car job started during the tests and was cut off, 2026-11-23)."""
+    until = _iso(_now() + timedelta(minutes=minutes))
+    state.update(PAUSE, {}, lambda _o: {"until": until, "by": by})
+
+
+def resume() -> None:
+    state.update(PAUSE, {}, lambda _o: {})
+
+
+def paused() -> bool:
+    p = state.read(PAUSE, {}) or {}
+    try:
+        return bool(p.get("until")) and datetime.fromisoformat(p["until"]) > _now()
+    except Exception:
+        return False
+
+
 def claim_next() -> Optional[Dict[str, Any]]:
-    """Marks the oldest due pending job as running and returns it (None if nothing is due)."""
+    """Marks the oldest due pending job as running and returns it (None if nothing is due or paused)."""
+    if paused():
+        return None
     claimed = {}
 
     def fn(jobs):
@@ -84,7 +109,9 @@ def claim_next() -> Optional[Dict[str, Any]]:
 
 
 def claim(job_id: str) -> Optional[Dict[str, Any]]:
-    """Marks ONE specific pending job as running (None if it isn't pending any more)."""
+    """Marks ONE specific pending job as running (None if it isn't pending any more, or the queue is paused)."""
+    if paused():
+        return None
     claimed = {}
 
     def fn(jobs):
