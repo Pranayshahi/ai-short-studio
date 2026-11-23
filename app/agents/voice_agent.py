@@ -1,7 +1,7 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import timedelta
 try:
     import edge_tts
@@ -173,7 +173,7 @@ class VoiceAgent:
             total_duration = words[-1]["end"] + 0.5 if words else 25.0
 
         # Estimate scene durations proportionally based on scene word counts
-        scene_durations = VoiceAgent._calculate_scene_durations(scenes, total_duration)
+        scene_durations = VoiceAgent._calculate_scene_durations(scenes, total_duration, words)
 
         # Generate custom dynamic saliency-aware ASS subtitle file
         VoiceAgent._generate_styled_ass(
@@ -193,9 +193,44 @@ class VoiceAgent:
         }
 
     @staticmethod
-    def _calculate_scene_durations(scenes: List[Dict[str, Any]], total_duration: float) -> List[float]:
+    def _durations_from_words(scenes: List[Dict[str, Any]], total_duration: float,
+                              words: List[Dict[str, Any]]) -> Optional[List[float]]:
+        """Scene cuts where the narrator ACTUALLY starts each scene's line (TTS word timings), so pictures and
+        voice stay together. Word-count estimates drifted up to a second on short lines (a list video showed the
+        next rifle while '...United States' of the previous one was still being said). None if the speech
+        can't be matched to the scene texts."""
+        import re as _re
+        norm = lambda t: _re.sub(r"[^0-9a-z]", "", str(t or "").lower())
+        targets = [len(norm(s.get("narration"))) for s in scenes]
+        if not words or not all(targets):
+            return None
+        starts, wi = [], 0
+        for tlen in targets:
+            if wi >= len(words):
+                return None
+            starts.append(float(words[wi].get("start", 0.0)))
+            acc = 0
+            while wi < len(words) and acc < tlen * 0.97:
+                acc += len(norm(words[wi].get("text") or words[wi].get("word")))
+                wi += 1
+            if acc < tlen * 0.85 or acc > tlen * 1.2:
+                return None  # the speech doesn't match this scene's text: don't guess
+        starts[0] = 0.0
+        bounds = starts + [max(total_duration, starts[-1] + 0.8)]
+        durs = [round(bounds[i + 1] - bounds[i], 2) for i in range(len(scenes))]
+        if any(d < 0.6 for d in durs):
+            return None
+        durs[-1] = round(total_duration - sum(durs[:-1]), 2)
+        return durs if durs[-1] >= 0.6 else None
+
+    @staticmethod
+    def _calculate_scene_durations(scenes: List[Dict[str, Any]], total_duration: float,
+                                   words: Optional[List[Dict[str, Any]]] = None) -> List[float]:
         if not scenes:
             return [total_duration]
+        exact = VoiceAgent._durations_from_words(scenes, total_duration, words) if words else None
+        if exact:
+            return exact
         min_dur = min(1.2, round(total_duration / len(scenes), 2))
         word_counts = [max(1, len(s["narration"].split())) for s in scenes]
         total_words = sum(word_counts)
@@ -231,8 +266,10 @@ class VoiceAgent:
         if is_wx:
             scene_placements = ["weaponx_bottom"] * (len(scenes) if scenes else 2)
         elif scene_image_paths:
-            for p in scene_image_paths:
-                placement = VoiceAgent._detect_image_focal_area(p)
+            for i, p in enumerate(scene_image_paths):
+                fixed = (scenes[i].get("caption_placement") if scenes and i < len(scenes) else None)
+                # a scene may fix its caption zone (list videos keep the name/photo area clear: bottom)
+                placement = fixed or VoiceAgent._detect_image_focal_area(p)
                 scene_placements.append(placement)
         else:
             scene_placements = ["bottom"] * (len(scenes) if scenes else 5)

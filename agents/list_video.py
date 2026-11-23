@@ -61,13 +61,15 @@ def plan_scenes(title: str, items: List[Dict[str, Any]], target: float = 25.0) -
     scenes = [{"narration": f"{title}.", "on_screen_text": title.upper(), "duration_seconds": INTRO_S, "list_scene": "intro"}]
     for it in items:
         r = it["row"]
-        line = f"{spoken(r['name'])}, {r['country']}." if r.get("country") else f"{spoken(r['name'])}."
+        # the name only: country and facts are on screen, and a 25 s video can't also read 10 countries aloud
+        line = f"{spoken(r['name'])}."
         scenes.append({"narration": line, "on_screen_text": f"#{r['rank']} {r['name'].upper()}",
                        "duration_seconds": per, "list_scene": "item", "list_rank": r["rank"]})
     scenes.append({"narration": "Which one would you pick? Tell us in the comments.", "on_screen_text": "WHICH ONE WOULD YOU PICK?",
                    "duration_seconds": OUTRO_S, "list_scene": "outro"})
     for n, sc in enumerate(scenes, 1):
-        sc.update(scene_number=n, scene_id=n, voiceover_text=sc["narration"], visual_prompt=sc["on_screen_text"])
+        sc.update(scene_number=n, scene_id=n, voiceover_text=sc["narration"], visual_prompt=sc["on_screen_text"],
+                  caption_placement="bottom")  # the name, flag and photo are at the top and middle
     return scenes
 
 
