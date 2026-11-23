@@ -132,3 +132,14 @@ def test_car_comparisons_are_not_labelled_weaponx():
     assert 'channel") == "autoflashx" and style == "weaponx"' in src and '": Head-to-Head"' in src
     js = open("app/static/app.js").read()
     assert "🏎️ Car Comparison" in js
+
+
+def test_car_comparison_script_has_no_weapon_wording():
+    from agents.content_analyser import ContentAnalyserAgent
+    ca = ContentAnalyserAgent()
+    import inspect
+    src = inspect.getsource(ContentAnalyserAgent)
+    for bad in ["modern battlefield", "frontline operations", "one hundred million", "twenty times the speed",
+                "completely obsolete"]:
+        assert bad not in src, bad
+    assert '"Head-to-head: ' in src or "Head-to-head: {clean_name}" in src

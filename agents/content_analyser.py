@@ -638,6 +638,12 @@ class ContentAnalyserAgent:
             elif _ev.is_evolution_prompt(topic):
                 short_hook = f"{clean_name}: from historical roots to their modern counterparts."
                 core_fact = "Every model, service year and photo is checked against Wikipedia."
+            elif re.search(r"\b(porsche|ferrari|lamborghini|mclaren|bugatti|koenigsegg|pagani|aston martin|bmw|mercedes|"
+                           r"audi|toyota|nissan|honda|ford|chevrolet|corvette|tesla|rimac|lotus|maserati|bentley|"
+                           r"rolls-royce|hyundai|kia|mahindra|tata|lexus|jaguar|land rover|mustang|supra|gt-r)\b", subj):
+                # a CAR video (e.g. the daily 'A vs B vs C' comparison on AutoFlashX): car wording, no claims
+                short_hook = f"Head-to-head: {clean_name}."
+                core_fact = "Engine, power, top speed and acceleration, side by side."
             elif has("submachine", "smg", "pdw"):
                 short_hook = "From close-quarters combat to elite special forces: this is the ultimate submachine gun breakdown."
                 core_fact = "Engineered for blistering rates of fire and tactical mobility, here are the world's top SMGs."
@@ -645,21 +651,24 @@ class ContentAnalyserAgent:
                 short_hook = "From the standard QBZ-191 assault rifle to high-caliber snipers: this is China's infantry arsenal."
                 core_fact = "Equipped with advanced optics and modular calibers, the PLA's 2026 firearms deliver lethal precision."
             elif has("pistol", "pistols", "handgun", "handguns", "sidearm", "sidearms"):
-                short_hook = "From the iconic M1911 to the modern SIG M17: these are the world's greatest service pistols."
-                core_fact = "Tested under the harshest battlefield conditions, sidearms remain a soldier's ultimate last line of defense."
+                short_hook = "From the iconic M1911 to the modern SIG M17: famous service pistols, side by side."
+                core_fact = "Each pistol with its cartridge, country and year."
             elif has("ak", "ak-47", "ak47", "kalashnikov"):
-                short_hook = "From the legendary AK-47 to the modern AK-12: this is the Kalashnikov global evolution."
-                core_fact = "With over one hundred million rifles built, the Kalashnikov defines global infantry warfare."
+                short_hook = "From the legendary AK-47 to the modern AK-12: the Kalashnikov family."
+                core_fact = "Each rifle with its cartridge, country and year."
             elif has("missile", "missiles", "hypersonic"):
-                short_hook = "Traveling up to twenty times the speed of sound, hypersonic missiles are rewriting global defense."
-                core_fact = "Unstoppable maneuverability and kinetic velocity leave modern missile defense systems completely obsolete."
+                short_hook = f"{clean_name}: the key systems, side by side."
+                core_fact = "Each one with its country, service year and specifications."
             elif has("jet", "jets", "fighter", "fighters", "stealth", "bomber", "bombers"):
-                short_hook = "Dominating the skies with radar-evading geometry and supercruise: these are the ultimate combat jets."
-                core_fact = "Equipped with next-gen sensor fusion and thrust-vectoring engines, sixth-gen air superiority is here."
+                short_hook = f"{clean_name}: the key aircraft, side by side."
+                core_fact = "Each one with its country, service year and specifications."
             else:
-                short_hook = f"From advanced tactical engineering to frontline operations: this is {clean_name}."
-                core_fact = f"Delivering decisive capability on the modern battlefield, nothing can match the power of {clean_name}."
+                short_hook = f"{clean_name}: the key facts, side by side."
+                core_fact = "Every name, country and number on screen is checked against its source."
 
+            is_car_topic = short_hook.startswith("Head-to-head:")
+            caption_1 = f"{'HEAD-TO-HEAD' if is_car_topic else 'WEAPONX LAB'} · {clean_name.upper()}"
+            caption_2 = "SPECS SIDE BY SIDE" if is_car_topic else f"{clean_name.upper()} DOMINANCE"
             static_prompt = (
                 f"Hyper-realistic 8k octane render in @WeaponXLabs YouTube channel style, static 9:16 vertical master hero shot of {clean_name}, "
                 f"dark matte stealth finish, glowing fiery amber afterburners and energy accents, volumetric storm clouds, "
@@ -674,7 +683,7 @@ class ContentAnalyserAgent:
                     "voiceover_text": short_hook,
                     "visual_prompt": static_prompt,
                     "key_subject": clean_name,
-                    "on_screen_text": f"WEAPONX LAB · {clean_name.upper()}",
+                    "on_screen_text": caption_1,
                     "static_image": True,
                 },
                 {
@@ -685,7 +694,7 @@ class ContentAnalyserAgent:
                     "voiceover_text": core_fact,
                     "visual_prompt": static_prompt,
                     "key_subject": clean_name,
-                    "on_screen_text": f"{clean_name.upper()} DOMINANCE",
+                    "on_screen_text": caption_2,
                     "static_image": True,
                 },
             ]
