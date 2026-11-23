@@ -226,6 +226,23 @@ class TopicAgent:
         web_facts: List[str] = []
         web_paragraphs: List[str] = []
 
+        # 0a. Web search FIRST (owner's request): what the web says about the topic right now. Results are
+        #     sources; their sentences become facts only when another site or Wikipedia confirms the numbers.
+        web_results: List[Dict[str, Any]] = []
+        try:
+            from agents import web_search
+            from agents.fact_check import off_domain
+            if web_search.available():
+                print(f"[{self.AGENT_NAME}] 🌐 Web search (Tavily) for: '{clean_topic}'")
+                web_results = [r for r in web_search.search(clean_topic) if not off_domain(f"{r['title']}. {r['content'][:300]}")]
+                for r in web_results:
+                    sources.append({"title": r["title"], "url": r["url"], "source_type": "web_search", "domain": r["domain"],
+                                    "reliability": r["reliability"], "snippet": r["content"][:280]})
+                print(f"[{self.AGENT_NAME}] 🌐 {len(web_results)} web result(s): "
+                      f"{', '.join(r['domain'] for r in web_results[:6])}")
+        except Exception as e:
+            print(f"[{self.AGENT_NAME}] Web search skipped: {e}")
+
         # 0. Specific model named (e.g. "C25"): pull the sections of Wikipedia articles that actually
         #    mention it. New equipment is often covered inside a parent/programme article long before
         #    it gets its own page, and summaries alone miss it.
@@ -301,6 +318,18 @@ class TopicAgent:
                 "snippet": custom_notes.strip()[:280],
             })
 
+        # Web-search sentences that are confirmed (numbers stated by another site or by Wikipedia)
+        web_confirmed: List[str] = []
+        if web_results:
+            try:
+                from agents import web_search
+                web_confirmed = web_search.corroborated_sentences(web_results, "\n".join(web_paragraphs))
+                print(f"[{self.AGENT_NAME}] 🌐 {len(web_confirmed)} confirmed web fact(s) added")
+                web_facts.extend(web_confirmed)
+                web_paragraphs.extend(r["content"] for r in web_results[:3] if r["reliability"] != "web")
+            except Exception as e:
+                print(f"[{self.AGENT_NAME}] Web facts skipped: {e}")
+
         # Deduplicate facts while preserving order (the bare title is not a fact)
         all_facts: List[str] = []
         seen_norm = {re.sub(r"\W+", "", clean_topic.lower())[:60], re.sub(r"\W+", "", clean_subject.lower())[:60]}
@@ -340,7 +369,7 @@ class TopicAgent:
         )
 
         # 6. Build explicit instructions for content-analyser
-        is_weaponx_lab_static = is_weaponx_lab and (effective_duration == 10.0)
+        is_weaponx_lab_static = is_weaponx_lab and (effective_duration <= 20.0)
         instructions_for_content_analyser = {
             "from_agent": self.AGENT_NAME,
             "to_agent": "content-analyser",
@@ -379,7 +408,9 @@ class TopicAgent:
             "target_duration": effective_duration,
             "hook": selected_entry.get("hook", ""),
             "key_facts": " ".join(all_facts[:4]),
-            "verified_facts": all_facts[:8],
+            # + the confirmed web facts, so the fact check accepts exactly those (not unconfirmed web text)
+            "verified_facts": list(dict.fromkeys(all_facts[:8] + web_confirmed)),
+            "web_results": [{k: r[k] for k in ("title", "url", "domain", "reliability")} for r in web_results],
             "sources": sources,
             "keywords": keywords,
             "research_text": research_text,
