@@ -194,7 +194,8 @@ class QARegressionChecksMixin:
         def client():
             from starlette.testclient import TestClient
             from app import web_app as wa
-            return TestClient(wa.app), wa
+            token = getattr(wa, "STUDIO_API_TOKEN", "")  # the studio's access token, when one is set
+            return TestClient(wa.app, headers={"X-Studio-Token": token} if token else {}), wa
 
         def fake_project(tmp: Path, n_scenes=2, status="completed"):
             sd = tmp / "scenes"

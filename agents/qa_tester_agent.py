@@ -185,6 +185,11 @@ class QATesterAgent(QARegressionChecksMixin):
         #     status naming, orphan cleanup, upload checks, add-scene images, offline end-to-end render
         results.extend(self._check_video_quality_regressions())
 
+        # 19. Every feature's own test file (fact check, web search, charts, list videos, New Launch, Commons
+        #     photos, queue pause, hashtags, watchdog, scene timing...): one result per test
+        if deep:
+            results.extend(self._check_feature_test_suite())
+
         total = len(results)
         passed = sum(1 for r in results if r.get("status") == "PASSED")
         failed = sum(1 for r in results if r.get("status") == "FAILED")
@@ -204,6 +209,47 @@ class QATesterAgent(QARegressionChecksMixin):
             "results": results,
         }
 
+
+    def _check_feature_test_suite(self) -> List[Dict[str, Any]]:
+        """Runs tests/test_*.py (all but test_app.py, which runs THIS suite) in a separate, isolated process
+        (tests/conftest.py: temp output/audio/credentials, no access token) and reports every test."""
+        import subprocess
+        import tempfile
+        import xml.etree.ElementTree as ET
+        tests_dir = self.root_dir / "tests"
+        files = sorted(str(f) for f in tests_dir.glob("test_*.py") if f.name != "test_app.py")
+        if not files:
+            return []
+        t0 = time.time()
+        with tempfile.TemporaryDirectory() as td:
+            xml_path = Path(td) / "junit.xml"
+            env = dict(os.environ, STUDIO_API_TOKEN="")
+            try:
+                proc = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=line",
+                                       f"--junitxml={xml_path}", *files], cwd=str(self.root_dir), env=env,
+                                      capture_output=True, text=True, timeout=1200)
+            except subprocess.TimeoutExpired:
+                return [{"name": "Feature tests: run", "category": "Feature Regressions", "status": "FAILED",
+                         "duration_ms": int((time.time() - t0) * 1000), "details": "pytest timed out after 20 min",
+                         "remediation": "Run the tests directly: .venv/bin/python -m pytest -q"}]
+            if not xml_path.exists():
+                return [{"name": "Feature tests: run", "category": "Feature Regressions", "status": "FAILED",
+                         "duration_ms": int((time.time() - t0) * 1000),
+                         "details": (proc.stdout + proc.stderr)[-600:], "remediation": "pytest could not start"}]
+            records = []
+            for case in ET.parse(xml_path).getroot().iter("testcase"):
+                bad = case.find("failure") if case.find("failure") is not None else case.find("error")
+                skipped = case.find("skipped") is not None
+                module = (case.get("classname") or "").split(".")[-1].replace("test_", "")
+                records.append({
+                    "name": f"{module}: {case.get('name', '').replace('test_', '').replace('_', ' ')}",
+                    "category": "Feature Regressions",
+                    "status": "PASSED" if bad is None else "FAILED",
+                    "duration_ms": int(float(case.get("time") or 0) * 1000),
+                    "details": ("skipped" if skipped else "OK") if bad is None else (bad.get("message") or bad.text or "")[:500],
+                    "remediation": None if bad is None else f"Run: .venv/bin/python -m pytest -q tests/test_{module}.py",
+                })
+            return records
 
     def _check_youtube_metadata_guard(self) -> List[Dict[str, Any]]:
         """Regression: a pasted request must never leak into title/description/tags."""
@@ -682,8 +728,23 @@ class QATesterAgent(QARegressionChecksMixin):
             return records
 
         try:
-            from app.web_app import app as web_app
-            client = TestClient(web_app)
+            from app import web_app as _wa
+            web_app = _wa.app
+            # the studio's own access token (STUDIO_API_TOKEN): without it every request is 401 and the whole
+            # API section failed even though the app was fine
+            token = getattr(_wa, "STUDIO_API_TOKEN", "")
+            client = TestClient(web_app, headers={"X-Studio-Token": token} if token else {})
+            if token:
+                t_gate = time.time()
+                anon = TestClient(web_app).get("/api/projects")
+                records.append({
+                    "name": "Backend API: access token required",
+                    "category": "Backend Sanity",
+                    "status": "PASSED" if anon.status_code == 401 else "FAILED",
+                    "duration_ms": int((time.time() - t_gate) * 1000),
+                    "details": f"GET /api/projects without the token -> HTTP {anon.status_code} (must be 401)",
+                    "remediation": None if anon.status_code == 401 else "The access-token gate let an anonymous request in.",
+                })
         except Exception as e:
             records.append({
                 "name": "Backend API Router: App Import",
